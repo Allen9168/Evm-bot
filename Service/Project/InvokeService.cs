@@ -82,7 +82,7 @@ namespace Soha.Service.Project
 
             swapRoute = projectConfig.SwapRouter.ToLower();
             contract = projectConfig.Contract.ToLower();
-            logger.LogInformation($" swapRoute : {swapRoute} contract ： {contract}");
+            logger.LogInformation($" 交换路由器 : {swapRoute} contract ： {contract}");
 
             amountIn = new BigInteger(projectConfig.Transaction.Cost * 1000000000000000000L);
             repeat = projectConfig.Transaction.Count;

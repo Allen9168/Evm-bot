@@ -1,5 +1,5 @@
 ﻿# 项目启用开关
-Enabled : true
+Enabled : false
 
 # 项目名称(每个项目必填 格式: 链-模式-币名字)
 Name : "XX-BurningSwap-项目"

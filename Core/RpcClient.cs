@@ -20,9 +20,9 @@ namespace Soha.Core
         }
         public async Task<string> SubscribeAsync(string Heads)
         {
-            logger.LogDebug($"Method : Subscribe Addres : {Heads}");
+            logger.LogDebug($"Method : 请求查询类型 : {Heads}");
             string response = await InvokeAsync<string>("eth_subscribe", new string[] { Heads });
-            logger.LogDebug($"     Result : {response}");
+            logger.LogDebug($"     成功获得ID : {response}");
             return response;
         }
         public async Task<bool> UnSubscribeAsync(string Subscription_Id)
@@ -35,10 +35,47 @@ namespace Soha.Core
 
         public async Task<BigInteger> GetChainIdAsync()
         {
-            logger.LogDebug($"Method : eth_chainId");
+            logger.LogDebug($"检测网络ID");
+
             string response = await InvokeAsync<string>("eth_chainId");
-            logger.LogDebug($"     Result : {response}");
+
+            // ✅ 获取网络名称
+            string networkName = GetNetworkName(response);
+
+            // ✅ 输出格式化日志
+            logger.LogDebug($"当前网络为: {response} ({networkName})");
+
             return BigInteger.Parse($"0{response.Remove(0, 2)}", NumberStyles.HexNumber);
+        }
+
+        private static string GetNetworkName(string chainIdHex)
+        {
+            if (chainIdHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                chainIdHex = chainIdHex.Substring(2);
+
+            if (!ulong.TryParse(chainIdHex, NumberStyles.HexNumber, null, out ulong chainId))
+                return $"未知网络 ({chainIdHex})";
+
+            return chainId switch
+            {
+                1 => "Ethereum 主网",
+                3 => "Ropsten 测试网",
+                4 => "Rinkeby 测试网",
+                5 => "Goerli 测试网",
+                56 => "BSC 主网",
+                97 => "BSC 测试网",
+                137 => "Polygon 主网",
+                80001 => "Polygon Mumbai 测试网",
+                42161 => "Arbitrum One",
+                421611 => "Arbitrum Rinkeby",
+                10 => "Optimism 主网",
+                11155111 => "Sepolia 测试网",
+                43114 => "Avalanche 主网",
+                43113 => "Avalanche Fuji 测试网",
+                250 => "Fantom 主网",
+                4002 => "Fantom 测试网",
+                _ => $"未知网络 ({chainId})"
+            };
         }
 
         public async Task<string> GetBalanceAsync(string Addres, string QuanTity)

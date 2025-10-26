@@ -67,6 +67,7 @@ namespace Soha
             if (Response == null)
             {
                 return;
+
             }
             if (!string.IsNullOrEmpty(Response.input))
             {

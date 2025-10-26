@@ -1,10 +1,10 @@
-﻿addres : "wss://bsc-rpc.publicnode.com"
-# 机器人
-Liquidity :
-  Enabled : true
-# 监控器 
-Monitor:
-  Enabled : false 
+﻿# 项目启用开关
+Enabled : true
+# 项目名称(每个项目必填 格式: 链-币名字)
+Name : "指定代币转账监控"
+# 项目模式(地址监控)
+Model : "tokenmonitor"
+#监控的代币
   Tokens :
    -  Contract : "0x55d398326f99059ff775485246999027b3197955" # USDT
       Amount : "1"

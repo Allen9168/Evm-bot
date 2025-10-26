@@ -21,7 +21,7 @@ namespace Soha.Service
         public async Task LoadAccountAsync()
         {
             string Current = Path.Combine(Directory.GetCurrentDirectory(), "Config", "Account");
-            logger.LogInformation($"[LoadAccount]");
+            logger.LogInformation($"[加载地址]");
             foreach (string accountPath in Directory.GetFiles(Current, "*.yaml"))
             {
                 IConfigurationRoot configuration = new ConfigurationBuilder()
@@ -46,7 +46,7 @@ namespace Soha.Service
                         groupList = string.Concat(groupList, ",", group);
                     }
                 }
-                logger.LogInformation($"    Wallet : {accountConfig.Wallet} Group : {groupList}");
+                logger.LogInformation($"    钱包地址 : {accountConfig.Wallet} 分组 : {groupList}");
                 // accountService.InvokeAsync("0xc1d0e4dc98a1d5b64c38e8f3d44843ba24a109c0", "0xd96a094a000000000000000000000000000000000000000000000000000000000000000a").GetAwaiter().GetResult(); 
                 // BigInteger amountIn = new BigInteger(1000000000000000000u) / 100;
                 // BigInteger bigInteger = BigInteger.Parse("0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", NumberStyles.HexNumber);

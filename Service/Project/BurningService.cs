@@ -120,8 +120,8 @@ namespace Soha.Service.Project
 
                 BurningMothed = InvokeTaskAsync;
                 data = projectConfig.Burning.Invoke.Data;
-                logger.LogInformation($"      contract: { contract}");
-                logger.LogInformation($"      data : {data} ");
+                logger.LogInformation($"      合约地址: { contract}");
+                logger.LogInformation($"      数据 : {data} ");
             }
 
             StartTime = burningConfigModel.StartTime;

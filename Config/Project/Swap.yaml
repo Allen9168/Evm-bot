@@ -5,13 +5,13 @@ Enabled : false
 Name : "BSC-Swap-项目"
 
 
-SwapRouter : "0x51aBA405De2b25E5506DeA32A6697F450cEB1a17" 
+SwapRouter : "0x9ae8082dc884be36d2e92976acd348ce647de99a" 
 
 # 项目模式(交换监控)
 Model : "Swap"
 
 # 监控 被添加流动性的地址
-Contract : "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"
+Contract : "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
 
 # 参与的机器人项目组(Main/SoHa)
 AccountGroups :
@@ -34,7 +34,7 @@ Transaction :
 # 交易参数
 Exact : 
   # 使用智能路由 (强制使用BNB去购买满足流动性检测的币)
-  Send : "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+  Send : "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
   # 最低购买数量 (为0无视滑点)
   AmountOutMin : 0
   # gas价格 (不写则为跟踪模式)
@@ -53,8 +53,8 @@ Liquiditys :
     # 流动性币指定
     Token :
        # BSC
-       - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC
-       - "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"  # USDT
+       - "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"  # USDC
+       - "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"  # USDT
     # 添加流动性时,使用的货币的数量 (整数)
     Amount : 0
   LiquidityETH :

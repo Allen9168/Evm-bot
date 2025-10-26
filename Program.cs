@@ -17,6 +17,7 @@ using System.IO;
 using System.Net.Http;
 using System.Net.WebSockets;
 using System.Threading;
+using Soha.Model.Config;
 
 namespace Soha
 {
@@ -72,12 +73,36 @@ namespace Soha
             containerBuilder.RegisterType<TransactionService >().InstancePerDependency();
 
 
+
             containerBuilder.Register(o =>
             {
+                var logger = o.Resolve<ILogger<Program>>();
                 string uriStr = ConfigurationBuilder.GetValue<string>("addres");
                 ClientWebSocket clientWebSocket = new();
                 Uri uri = new(uriStr);
-                clientWebSocket.ConnectAsync(uri, CancellationToken.None).GetAwaiter().GetResult();
+
+                try
+                {
+                    clientWebSocket.ConnectAsync(uri, CancellationToken.None).GetAwaiter().GetResult();
+                    logger.LogInformation($"成功连接到 RPC: {uriStr}");
+                }
+                catch (UriFormatException)
+                {
+                    logger.LogInformation($"RPC 地址格式错误: {uriStr}");
+                    Environment.Exit(1);
+                }
+                catch (System.Net.WebSockets.WebSocketException ex)
+                {
+                    logger.LogInformation($"无法连接到 RPC: {uriStr}");
+                    logger.LogInformation($"错误信息: {ex.Message}");
+                    Environment.Exit(1);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogInformation($"连接 RPC 时出现未知错误: {ex.Message}");
+                    Environment.Exit(1);
+                }
+
                 MessageHandlerBase messageHandler = new WebSocketMessageHandler(clientWebSocket);
                 return messageHandler;
             }).SingleInstance();

@@ -21,7 +21,7 @@ Name : "BSC-Swap-项目"
 #   Quick    0xa5e0829caced8ffdd4de3c43696c57f7d7a678ff
 SwapRouter : "0x10ed43c718714eb63d5aa57b78b54704e256024e" 
 
-# 项目模式(交换监控)
+# 项目模式(地址监控)
 Model : "transactiom"
 
 # 调用者

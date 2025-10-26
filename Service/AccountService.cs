@@ -38,13 +38,44 @@ namespace Soha.Service
             this.rpcClient = rpcClient;
             this.logger = logger;
         }
-        public async Task RegisterAsync(string Wallet, string PrivateKey)
+        public async Task RegisterAsync(string wallet, string privateKey)
         {
-            ethECKey = new EthECKey(PrivateKey);
-            chainId = await rpcClient.GetChainIdAsync();
-            wallet = addressUtil.ConvertToChecksumAddress(Wallet);
-            privateKey = PrivateKey;
-            TransactionCount = await rpcClient.GetTransactionCountAsync(wallet);
+            try
+            {
+                // ===== 检查私钥格式 =====
+                if (string.IsNullOrWhiteSpace(privateKey))
+                    throw new ArgumentException("私钥不能为空。");
+
+                string key = privateKey.StartsWith("0x") ? privateKey.Substring(2) : privateKey;
+
+                if (key.Length != 64 || !System.Text.RegularExpressions.Regex.IsMatch(key, @"^[0-9a-fA-F]+$"))
+                    throw new FormatException("私钥格式不正确，应为64位16进制字符。");
+
+                // ===== 尝试创建密钥对象 =====
+                ethECKey = new EthECKey(privateKey);
+
+                // ===== 继续初始化 =====
+                chainId = await rpcClient.GetChainIdAsync();
+                wallet = addressUtil.ConvertToChecksumAddress(wallet);
+                TransactionCount = await rpcClient.GetTransactionCountAsync(wallet);
+
+                logger.LogInformation("私钥检测成功！");
+            }
+            catch (FormatException)
+            {
+                logger.LogInformation("私钥错误：格式不正确。");
+                Environment.Exit(1);
+            }
+            catch (ArgumentException ex)
+            {
+                logger.LogInformation($"参数错误：{ex.Message}");
+                Environment.Exit(1);
+            }
+            catch (Exception ex)
+            {
+                logger.LogInformation($"未知错误：{ex.Message}");
+                Environment.Exit(1);
+            }
         }
         public async Task<string> ExactTokensForTokensAsync(ISwapFactory swapFactory, BigInteger amountIn, BigInteger amountOutMin, string[] path, BigInteger gasPrice, BigInteger gasCount)
         {
@@ -176,7 +207,7 @@ namespace Soha.Service
                 task = rpcClient.SendRawTransactionAsync("0x" + encoded);
                 TransactionCount++;
             }
-            logger.LogInformation($"    [Approve]  Tx : {await task}");
+            logger.LogInformation($"    [授权]  Tx : {await task}");
         }
         public Task<string> InvokeAsync(string Contract, BigInteger gasPrice, BigInteger gasCount, string Data)
         {
@@ -225,9 +256,9 @@ namespace Soha.Service
                 }
             }
             string result = await ExactTokensForTokensAsync(swapFactory, amountIn, amountOutMin, path, gasPrice, gasCount);
-            logger.LogInformation($"[Sell]");
+            logger.LogInformation($"[卖]");
             logger.LogInformation($"     数量 : {amountIn} 滑点 : {amountOutMin} 路径 : {string.Join(" => ", path)}");
-            logger.LogInformation($"     Tx   : {result} ");
+            logger.LogInformation($"     发送Tx   : {result} ");
         }
         public async Task<BigInteger> BalanceOfAsync(string Contract)
         {
