@@ -1,0 +1,88 @@
+﻿# 项目启用开关
+Enabled : false
+
+# 项目名称(每个项目必填 格式: 链-币名字)
+Name : "BSC-Swap-项目"
+
+
+SwapRouter : "0x51aBA405De2b25E5506DeA32A6697F450cEB1a17" 
+
+# 项目模式(交换监控)
+Model : "Swap"
+
+# 监控 被添加流动性的地址
+Contract : "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"
+
+# 参与的机器人项目组(Main/SoHa)
+AccountGroups :
+  - "Main"
+
+# 购买参数
+Transaction :
+  # 购买量
+  Cost : 0.1
+  # 购买循环次数
+  Count : 1
+  #购买超时
+  OutTime : 1000
+
+# 延迟购买
+# Delay :
+  # TimeDelay : 10
+  # BlockDelay : 3
+
+# 交易参数
+Exact : 
+  # 使用智能路由 (强制使用BNB去购买满足流动性检测的币)
+  Send : "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+  # 最低购买数量 (为0无视滑点)
+  AmountOutMin : 0
+  # gas价格 (不写则为跟踪模式)
+  # GasPrice : 20
+  # gas数量
+  GasCount : 500000
+  # 购买超时(秒)
+  OutTime : 1000
+
+# 底池检测
+Liquiditys : 
+  # 使用何种币添加的流动性 , 只能针对 TokenToToken
+  Liquidity : 
+    # 其他货币流动性 检测开关
+    Enabled : true
+    # 流动性币指定
+    Token :
+       # BSC
+       - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC
+       - "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"  # USDT
+    # 添加流动性时,使用的货币的数量 (整数)
+    Amount : 0
+  LiquidityETH :
+    # BNB 检测开关
+    Enabled : true
+    # BNB 底池数量
+    Amount : 100
+
+Approve : 
+  Enabled : true
+  # 授权目标合约 默认:路由器
+  # Spender : "0x10ed43c718714eb63d5aa57b78b54704e256024e"
+  # 授权数量 默认:最大值
+  # Value : "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+# 自动出售
+Sell :
+  # 开关
+  Enabled : false
+  # 卖出时得到的币
+  Receive : "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+  # gas价格 (不写则为跟踪模式)
+  # GasPrice : 5
+  # AmountIn : 0
+  # 卖出的数量 不写就是全卖
+  AmountOutMin : 20000
+  Delay :
+    # 延迟时间 推荐 区块数量 减少检测频率
+    # TimeDelay : 0
+    # 区块延迟 按照购买时的区块向后推迟 N 区块
+    BlockDelay : 1

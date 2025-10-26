@@ -1,0 +1,13 @@
+﻿Serilog:
+  Using:
+  - Serilog.Sinks.Console
+  - Serilog.Sinks.File
+  MinimumLevel:
+    Default: Debug
+    Override:
+        Microsoft: Warning
+        System: Warning
+  Enrich:
+  - FromLogContext
+  - WithMachineName
+  - WithThreadId

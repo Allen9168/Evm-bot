@@ -1,0 +1,14 @@
+﻿addres : "wss://bsc.getblock.io/12291586-47e7-483b-acc5-613c8b8d8a6a/mainnet/"
+# 机器人
+Liquidity :
+  Enabled : true
+# 监控器 
+Monitor:
+  Enabled : false 
+  Tokens :
+   -  Contract : "0x55d398326f99059ff775485246999027b3197955" # USDT
+      Amount : "100"
+   -  Contract : "0xe9e7cea3dedca5984780bafc599bd69add087d56" # BUSD
+      Amount : "100"
+   -  Contract : "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" # WBNB
+      Amount : "100"
