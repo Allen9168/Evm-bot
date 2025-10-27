@@ -3,187 +3,150 @@ using SoHa_Bot.Model;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Numerics;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace Soha.Service.Project
 {
     internal class TransactionService : IProject
     {
-        private readonly Microsoft.Extensions.Logging.ILogger logger;
+        private readonly ILogger<TransactionService> logger;
         private readonly AccountManager accountManager;
-        private readonly TokenService tokenService;
-        private readonly ChainService chainService;
-        private readonly List<AccountService> accountServices = new List<AccountService>();
-        public TransactionService(ILogger<TransactionService> logger, AccountManager accountManager, TokenService tokenService, ChainService chainService)
+        private readonly ChainService chainService; // 如未使用可移除
+
+        private readonly List<AccountService> accountServices = new();
+
+        public TransactionService(
+            ILogger<TransactionService> logger,
+            AccountManager accountManager,
+            TokenService _unusedTokenService, // 不再需要，可从构造函数和 DI 中移除
+            ChainService chainService)
         {
             this.logger = logger;
             this.accountManager = accountManager;
-            this.tokenService = tokenService;
             this.chainService = chainService;
         }
 
-
-        private ISwapFactory SwapFactory;
-
         private ProjectConfig projectConfig;
 
-        private string send;
-        private bool TransferETHPair;
-        private string contract, swapRoute;
-        private int repeat;
-        private int outTime;
+        // 监听触发者 & 目标合约 & 自定义 data
         private string sender;
+        private string targetContract;
+        private string dataHex;
 
-
-
-        private bool EthPair;
-
-        #region Exact
-        private bool AutoGas = true;
-        private BigInteger gasPrice, gasCount;
-        private BigInteger amountIn, amountOutMin;
-        private bool IsSlippage;
-        #endregion
-
+        // Gas 设置
+        private bool autoGas = true;        // true=跟踪事件里的 gas；false=用固定 gasPrice
+        private BigInteger gasPriceWei;     // 固定 gasPrice（wei）
+        private BigInteger gasLimit;        // GasCount
 
         public async Task StartAsync(ProjectConfig projectConfig)
         {
-            if (!projectConfig.Enabled)
-            {
-                return;
-            }
-            logger.LogInformation($" 项目     : {projectConfig.Name}");
+            if (!projectConfig.Enabled) return;
+            this.projectConfig = projectConfig;
 
+            // 账号组聚合
             string groupList = string.Empty;
             foreach (string accountGroup in projectConfig.AccountGroups)
             {
-                List<AccountService> accountServices = accountManager.GetAccount(accountGroup);
-                this.accountServices.AddRange(accountServices);
-                if (string.IsNullOrEmpty(groupList))
-                {
-                    groupList = string.Concat(groupList, accountGroup);
-                }
-                else
-                {
-                    groupList = string.Concat(groupList, ",", accountGroup);
-                }
+                var list = accountManager.GetAccount(accountGroup);
+                accountServices.AddRange(list);
+                groupList = string.IsNullOrEmpty(groupList) ? accountGroup : $"{groupList},{accountGroup}";
             }
-            logger.LogInformation($"  group : {groupList} account : {accountServices.Count}");
-            swapRoute = projectConfig.SwapRouter.ToLower();
-            contract = projectConfig.Contract.ToLower();
-            logger.LogInformation($" swapRoute : {swapRoute} contract ： {contract}");
 
-            SwapFactory = Soha.SwapFactory.SwapFactory.SwapRouteFactory(swapRoute);
+            sender = projectConfig.Sender?.ToLower();
+            targetContract = projectConfig.Contract?.ToLower();
 
-            if (projectConfig.Exact != null)
+            // 读取顶层 Invoke；也可兼容 Burning.Invoke（按需保留）
+            var invokeCfg = projectConfig.Invoke ?? projectConfig.Burning?.Invoke;
+            if (invokeCfg == null)
             {
-                if (string.IsNullOrEmpty(projectConfig.Exact.Send))
-                {
-                    send = SwapFactory.ETH;
-                    TransferETHPair = true;
-                }
-                else
-                {
-                    send = projectConfig.Exact.Send;
-                    if (send.Equals(SwapFactory.ETH, StringComparison.OrdinalIgnoreCase))
-                    {
-                        TransferETHPair = true;
-                    }
-                }
-                decimal unit = await tokenService.TokenDecimalsAsync(send);
-
-                IsSlippage = projectConfig.Exact.AmountOutMin.HasValue;
-                if (IsSlippage)
-                {
-                    amountOutMin = new BigInteger(projectConfig.Exact.AmountOutMin.Value * unit);
-                }
-                if (projectConfig.Exact.GasPrice.HasValue)
-                {
-                    AutoGas = false;
-                    gasPrice = new BigInteger(projectConfig.Exact.GasPrice.Value * 1000000000);
-                }
-                gasCount = new BigInteger(projectConfig.Exact.GasCount.Value);
-                string amountOutMinStr = amountOutMin > 0 ? amountOutMin.ToString() : "null";
-                logger.LogInformation($"      amountOutMin {amountOutMinStr} gasPrice : {(gasPrice > 0 ? gasPrice / 1000000000 : "跟踪模式")}");
-
-                amountIn = new BigInteger(projectConfig.Transaction.Cost * unit);
-                repeat = projectConfig.Transaction.Count;
-                outTime = projectConfig.Transaction.OutTime;
-                logger.LogInformation($"      amountIn : {projectConfig.Transaction.Cost} repeat : {repeat} outTime : {outTime}");
-                logger.LogInformation($"      group : {groupList} account : {accountServices.Count}");
-            }
-            else
-            {
-                logger.LogError($" 项目 : {projectConfig.Name} 流动性配置不可为空");
+                logger.LogError($"[{projectConfig.Name}] 缺少 Invoke 配置（Data/GasCount 必填，GasPrice 可选）。");
                 return;
             }
 
-            sender = projectConfig.Sender.ToLower();
+            dataHex = NormalizeHex(invokeCfg.Data);
+            if (string.IsNullOrWhiteSpace(dataHex))
+            {
+                logger.LogError($"[{projectConfig.Name}] Invoke.Data 不能为空。");
+                return;
+            }
 
+            gasLimit = new BigInteger(invokeCfg.GasCount ?? 210000);
+            if (invokeCfg.GasPrice.HasValue)
+            {
+                autoGas = false;
+                gasPriceWei = new BigInteger(invokeCfg.GasPrice.Value * 1_000_000_000L); // gwei -> wei
+            }
+
+            logger.LogInformation($" 项目       : {projectConfig.Name}");
+            logger.LogInformation($" 账号组     : {groupList} 账号数量 : {accountServices.Count}");
+            logger.LogInformation($" 触发者     : {sender}");
+            logger.LogInformation($" 目标合约   : {targetContract}");
+            logger.LogInformation($" Data       : {(dataHex.Length > 66 ? dataHex[..66] + "..." : dataHex)}");
+            logger.LogInformation($" GasLimit   : {gasLimit}  GasPrice : {(autoGas ? "Auto(跟踪)" : $"{gasPriceWei / 1_000_000_000} gwei")}");
+
+            // 订阅链上事件
             RobotUser.TransactionEvent += RobotUser_TransactionEventAsync;
         }
 
-        private async  Task RobotUser_TransactionEventAsync(string tx, string from, string gasPrice, string maxFeePerGas, string maxPriorityFeePerGas, string value, string input)
+        // 命中 sender 后，直接向 targetContract 发送自定义 data（不再做任何 Swap）
+        private async Task RobotUser_TransactionEventAsync(
+            string tx,
+            string from,
+            string gasPriceHex,
+            string maxFeePerGasHex,
+            string maxPriorityFeePerGasHex,
+            string valueHex,
+            string inputHex)
         {
-            if (from.Equals(sender))
+            try
             {
-                if (TransferETHPair)
+                if (!from.Equals(sender, StringComparison.OrdinalIgnoreCase)) return;
+                if (string.IsNullOrEmpty(targetContract) || string.IsNullOrEmpty(dataHex)) return;
+
+                // 选择 gas：固定优先，否则跟踪事件（BSC 常用 legacy gasPrice；EIP-1559 则取 maxFeePerGas）
+                BigInteger gp = autoGas ? PickGasFromEvent(gasPriceHex, maxFeePerGasHex) : gasPriceWei;
+                if (gp <= 0) gp = new BigInteger(5_000_000_000L); // 兜底 5 gwei，可按需调整
+
+                var tasks = new List<Task<string>>();
+                foreach (var account in accountServices)
                 {
-                    await ETHForTokensAsync(contract, gasPrice);
+                    tasks.Add(account.InvokeAsync(targetContract, gp, gasLimit, dataHex));
                 }
-                else {
-                    await TokensForTokensAsync(new string[] { send, contract }, gasPrice);
+
+                var hashes = await Task.WhenAll(tasks);
+                foreach (var h in hashes)
+                {
+                    logger.LogInformation($"[Invoke] Tx: {h}");
                 }
             }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "[Invoke] 发送自定义 data 失败");
+            }
         }
 
-        private async Task ETHForTokensAsync(string BuyToken, string GasPrice)
-        {
-            List<Task> tasks = new();
-            if (accountServices.Count <= 0)
-            {
-                logger.LogError($"[Buy] 无法完成交易 账户数量 : {accountServices.Count}");
-            }
-            if (AutoGas)
-            {
-                gasPrice = BigInteger.Parse($"0{GasPrice.Remove(0, 2)}", NumberStyles.HexNumber);
-            }
+        public Task UpdateAsync() => Task.CompletedTask;
 
-            foreach (AccountService accountService in accountServices)
-            {
-                Task buyTask = accountService.ExactETHForTokensAsync(SwapFactory, amountIn, amountOutMin, new string[] { SwapFactory.ETH, BuyToken }, gasPrice, gasCount, repeat, outTime);
-                tasks.Add(buyTask);
-            }
-            await Task.WhenAll(tasks.ToArray());
-        }
-        private async Task TokensForTokensAsync(string[] path, string GasPrice)
-        {
-        
-            List<Task> tasks = new();
-            if (accountServices.Count <= 0)
-            {
-                logger.LogError($"[Buy] 无法完成交易 账户数量 : {accountServices.Count}");
-            }
-            if (AutoGas)
-            {
-                gasPrice = BigInteger.Parse($"0{GasPrice.Remove(0, 2)}", NumberStyles.HexNumber);
-            }
+        // Helpers
+        private static string NormalizeHex(string s) =>
+            string.IsNullOrWhiteSpace(s) ? null : (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s : "0x" + s);
 
-            foreach (AccountService accountService in accountServices)
-            {
-                Task buyTask = accountService.ExactTokensForTokensAsync(SwapFactory, amountIn, amountOutMin, path, gasPrice, gasCount, repeat, outTime);
-                tasks.Add(buyTask);
-            }
-            await Task.WhenAll(tasks.ToArray());
+        private static BigInteger ParseHexWei(string hex)
+        {
+            if (string.IsNullOrEmpty(hex)) return 0;
+            var t = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
+            if (string.IsNullOrEmpty(t)) return 0;
+            return BigInteger.Parse("0" + t, NumberStyles.HexNumber);
         }
 
-
-        public async  Task UpdateAsync()
+        private static BigInteger PickGasFromEvent(string gasPriceHex, string maxFeePerGasHex)
         {
-
+            var legacy = ParseHexWei(gasPriceHex);
+            if (legacy > 0) return legacy;
+            var maxFee = ParseHexWei(maxFeePerGasHex);
+            if (maxFee > 0) return maxFee;
+            return 0;
         }
     }
 }
