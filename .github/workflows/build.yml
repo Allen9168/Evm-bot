@@ -1,14 +1,9 @@
 name: build-and-release
 
 on:
-  # 手动触发
   workflow_dispatch:
-
-  # 推送 tag（如 v1.0.0）会自动构建+发版
   push:
     tags: [ 'v*' ]
-
-  # 也支持在 GitHub UI 上 “Publish release” 时触发
   release:
     types: [ published ]
 
@@ -21,11 +16,9 @@ jobs:
           - os: ubuntu-latest
             rid: linux-x64
             artifact_ext: tar.gz
-            shell: bash
           - os: windows-latest
             rid: win-x64
             artifact_ext: zip
-            shell: pwsh
 
     env:
       PROJECT: Soha.csproj
@@ -45,23 +38,21 @@ jobs:
 
       - name: Restore
         run: dotnet restore ${{ env.PROJECT }}
-        shell: ${{ matrix.shell }}
 
       - name: Build
         run: dotnet build ${{ env.PROJECT }} -c ${{ env.CONFIG }} --nologo
-        shell: ${{ matrix.shell }}
 
-      - name: Publish self-contained single-file
-        run: |
-          dotnet publish ${{ env.PROJECT }} -c ${{ env.CONFIG }} \
-            -r ${{ matrix.rid }} --self-contained true \
-            -p:PublishSingleFile=true -p:PublishTrimmed=false \
-            -p:AssemblyName=${{ env.APP_NAME }} \
-            -o ${{ env.OUT_DIR }}/${{ matrix.rid }}/app
-        shell: bash
+      # 单行 publish，兼容两端 shell（路径用 / 也能被 dotnet 识别）
+      - name: Publish (self-contained, single-file)
+        run: >
+          dotnet publish ${{ env.PROJECT }} -c ${{ env.CONFIG }}
+          -r ${{ matrix.rid }} --self-contained true
+          -p:PublishSingleFile=true -p:PublishTrimmed=false
+          -p:AssemblyName=${{ env.APP_NAME }}
+          -o ${{ env.OUT_DIR }}/${{ matrix.rid }}/app
 
-      # 将 Config/ 复制到产物目录（与可执行文件同级），这样发布包内就带上配置
-      - name: Copy Config folder (Linux)
+      # 复制 Config 到产物
+      - name: Copy Config (Linux)
         if: matrix.rid == 'linux-x64'
         run: |
           if [ -d "Config" ]; then
@@ -69,9 +60,8 @@ jobs:
             cp -R Config/* "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/Config/" || true
           fi
           chmod +x "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/${{ env.APP_NAME }}"
-        shell: bash
 
-      - name: Copy Config folder (Windows)
+      - name: Copy Config (Windows)
         if: matrix.rid == 'win-x64'
         run: |
           if (Test-Path "Config") {
@@ -80,13 +70,12 @@ jobs:
           }
         shell: pwsh
 
-      # 打包（不再 mv/rename，可执行文件名保持为 APP_NAME）
+      # 打包
       - name: Pack Linux
         if: matrix.rid == 'linux-x64'
         run: |
           tar -czf "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}" \
             -C "${{ env.OUT_DIR }}/${{ matrix.rid }}/app" .
-        shell: bash
 
       - name: Pack Windows
         if: matrix.rid == 'win-x64'
@@ -99,11 +88,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_NAME }}-${{ matrix.rid }}
-          path: |
-            ${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}
+          path: ${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}
 
   release:
-    # 当是 tag push 或者 release event 时才跑
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
@@ -120,7 +107,6 @@ jobs:
           files: |
             Soha-linux-x64/Soha-linux-x64.tar.gz
             Soha-win-x64/Soha-win-x64.zip
-          # 如果是 release 事件，使用该 release；如果是 tag push，会自动创建新的 release
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
