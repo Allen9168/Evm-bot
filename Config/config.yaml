@@ -1,4 +1,4 @@
-﻿addres : "wss://bsc-rpc.publicnode.com"
+﻿addres : "wss://ethereum-sepolia.core.chainstack.com/ced486101f05ba9f9bb0bd11112c826f"
 # 机器人
 Liquidity :
   Enabled : true

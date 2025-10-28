@@ -1,9 +1,11 @@
 ﻿using Microsoft.Extensions.Logging;
 using SoHa_Bot.Model;
+using Soha.Model.Config;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Numerics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Soha.Service.Project
@@ -12,14 +14,18 @@ namespace Soha.Service.Project
     {
         private readonly ILogger<TransactionService> logger;
         private readonly AccountManager accountManager;
-        private readonly ChainService chainService; // 如未使用可移除
+        private readonly ChainService chainService; // kept for DI symmetry
 
         private readonly List<AccountService> accountServices = new();
+
+        // heartbeat
+        private PeriodicTimer heartbeatTimer;
+        private readonly CancellationTokenSource heartbeatCts = new();
 
         public TransactionService(
             ILogger<TransactionService> logger,
             AccountManager accountManager,
-            TokenService _unusedTokenService, // 不再需要，可从构造函数和 DI 中移除
+            TokenService _unusedTokenService, // kept for DI symmetry
             ChainService chainService)
         {
             this.logger = logger;
@@ -29,22 +35,22 @@ namespace Soha.Service.Project
 
         private ProjectConfig projectConfig;
 
-        // 监听触发者 & 目标合约 & 自定义 data
+        // trigger and target
         private string sender;
         private string targetContract;
         private string dataHex;
 
-        // Gas 设置
-        private bool autoGas = true;        // true=跟踪事件里的 gas；false=用固定 gasPrice
-        private BigInteger gasPriceWei;     // 固定 gasPrice（wei）
-        private BigInteger gasLimit;        // GasCount
+        // gas settings (config fallback)
+        private bool autoGas = true;        // true: prefer following event fees
+        private BigInteger gasPriceWeiCfg;  // legacy fallback from config (wei)
+        private BigInteger gasLimit;        // Invoke.GasCount
 
         public async Task StartAsync(ProjectConfig projectConfig)
         {
             if (!projectConfig.Enabled) return;
             this.projectConfig = projectConfig;
 
-            // 账号组聚合
+            // collect accounts
             string groupList = string.Empty;
             foreach (string accountGroup in projectConfig.AccountGroups)
             {
@@ -53,43 +59,68 @@ namespace Soha.Service.Project
                 groupList = string.IsNullOrEmpty(groupList) ? accountGroup : $"{groupList},{accountGroup}";
             }
 
-            sender = projectConfig.Sender?.ToLower();
-            targetContract = projectConfig.Contract?.ToLower();
+            sender = (projectConfig.Sender ?? string.Empty).ToLowerInvariant();
+            targetContract = (projectConfig.Contract ?? string.Empty).ToLowerInvariant();
 
-            // 读取顶层 Invoke；也可兼容 Burning.Invoke（按需保留）
+            // read Invoke (top-level) or fallback to Burning.Invoke
             var invokeCfg = projectConfig.Invoke ?? projectConfig.Burning?.Invoke;
             if (invokeCfg == null)
             {
-                logger.LogError($"[{projectConfig.Name}] 缺少 Invoke 配置（Data/GasCount 必填，GasPrice 可选）。");
+                logger.LogError("[TransactionService] 缺少调用部分 (Data/GasCount required, GasPrice optional).");
                 return;
             }
 
             dataHex = NormalizeHex(invokeCfg.Data);
             if (string.IsNullOrWhiteSpace(dataHex))
             {
-                logger.LogError($"[{projectConfig.Name}] Invoke.Data 不能为空。");
+                logger.LogError("[TransactionService] 调用数据不能为空.");
                 return;
             }
 
+            // exact GasLimit from config; default to 210000 if missing
             gasLimit = new BigInteger(invokeCfg.GasCount ?? 210000);
+
             if (invokeCfg.GasPrice.HasValue)
             {
-                autoGas = false;
-                gasPriceWei = new BigInteger(invokeCfg.GasPrice.Value * 1_000_000_000L); // gwei -> wei
+                autoGas = false; // prefer using fixed config price if provided
+                gasPriceWeiCfg = new BigInteger(invokeCfg.GasPrice.Value) * 1_000_000_000; // gwei -> wei
             }
 
-            logger.LogInformation($" 项目       : {projectConfig.Name}");
-            logger.LogInformation($" 账号组     : {groupList} 账号数量 : {accountServices.Count}");
-            logger.LogInformation($" 触发者     : {sender}");
-            logger.LogInformation($" 目标合约   : {targetContract}");
-            logger.LogInformation($" Data       : {(dataHex.Length > 66 ? dataHex[..66] + "..." : dataHex)}");
-            logger.LogInformation($" GasLimit   : {gasLimit}  GasPrice : {(autoGas ? "Auto(跟踪)" : $"{gasPriceWei / 1_000_000_000} gwei")}");
+            logger.LogInformation("项目      : {Name}", projectConfig.Name);
+            logger.LogInformation("已启动的地址组和数量 : {Groups}  Accounts: {Count}", groupList, accountServices.Count);
+            logger.LogInformation("检测调用地址       : {Sender}", sender);
+            logger.LogInformation("调用合约地址       : {Contract}", targetContract);
+            logger.LogInformation("自定义调用Data         : {DataPreview}", dataHex.Length > 66 ? dataHex[..66] + "..." : dataHex);
+            logger.LogInformation("Gas数量     : {GasLimit}  Gas价格: {GasPrice}",
+                gasLimit,
+                (autoGas ? "自动(跟随模式)" : $"{ToGwei(gasPriceWeiCfg):0.###} gwei"));
 
-            // 订阅链上事件
+            // subscribe
             RobotUser.TransactionEvent += RobotUser_TransactionEventAsync;
+
+            // heartbeat every 30s
+            heartbeatTimer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (await heartbeatTimer.WaitForNextTickAsync(heartbeatCts.Token))
+                    {
+                        logger.LogInformation("[TransactionService] 该项目运行中: 开关={Enabled}, 在线地址数量={Accounts}, 检测到异动的地址={Sender}, 调用的合约={Target}",
+                            this.projectConfig?.Enabled ?? false,
+                            accountServices.Count,
+                            sender,
+                            targetContract);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (ObjectDisposedException) { }
+            }, heartbeatCts.Token);
+
+            await Task.CompletedTask;
         }
 
-        // 命中 sender 后，直接向 targetContract 发送自定义 data（不再做任何 Swap）
+        // when the monitored sender appears in pending txs
         private async Task RobotUser_TransactionEventAsync(
             string tx,
             string from,
@@ -101,38 +132,92 @@ namespace Soha.Service.Project
         {
             try
             {
-                if (!from.Equals(sender, StringComparison.OrdinalIgnoreCase)) return;
-                if (string.IsNullOrEmpty(targetContract) || string.IsNullOrEmpty(dataHex)) return;
+                if (string.IsNullOrEmpty(from) || !from.Equals(sender, StringComparison.OrdinalIgnoreCase))
+                    return;
 
-                // 选择 gas：固定优先，否则跟踪事件（BSC 常用 legacy gasPrice；EIP-1559 则取 maxFeePerGas）
-                BigInteger gp = autoGas ? PickGasFromEvent(gasPriceHex, maxFeePerGasHex) : gasPriceWei;
-                if (gp <= 0) gp = new BigInteger(5_000_000_000L); // 兜底 5 gwei，可按需调整
+                if (string.IsNullOrEmpty(targetContract) || string.IsNullOrEmpty(dataHex))
+                    return;
 
-                var tasks = new List<Task<string>>();
-                foreach (var account in accountServices)
+                // parse fees from event
+                var eventGasPrice = ParseWeiHex(gasPriceHex);
+                var eventMaxFee = ParseWeiHex(maxFeePerGasHex);
+                var eventTip = ParseWeiHex(maxPriorityFeePerGasHex);
+
+                bool is1559 = (eventMaxFee > 0 && eventTip > 0);
+
+                if (is1559)
                 {
-                    tasks.Add(account.InvokeAsync(targetContract, gp, gasLimit, dataHex));
+                    // follow 1559 exactly
+                    logger.LogInformation(
+                        "[TransactionService] 触发项目! -> 请求发送交易: srcTx={Tx} type=1559 fee=(maxFee={MaxFeeGwei:0.###} gwei, tip={TipGwei:0.###} gwei) gasLimit={GasLimit}, accounts={Accounts}, target={Target}",
+                        tx, ToGwei(eventMaxFee), ToGwei(eventTip), gasLimit, accountServices.Count, targetContract);
+
+                    var tasks = new List<Task<string>>(accountServices.Count);
+                    foreach (var account in accountServices)
+                    {
+                        tasks.Add(account.Invoke1559Async(
+                            targetContract,
+                            gasLimit,
+                            eventTip,
+                            eventMaxFee,
+                            dataHex));
+                    }
+
+                    var results = await Task.WhenAll(tasks);
+                    for (int i = 0; i < results.Length; i++)
+                    {
+                        var h = results[i];
+                        if (!string.IsNullOrEmpty(h))
+                            logger.LogInformation("[TransactionService] 已使用你的私钥发送tx (1559): tx={TxHash}", h);
+                        else
+                            logger.LogWarning("[TransactionService] 调用（1559）返回空哈希 (account idx={Idx})", i);
+                    }
                 }
-
-                var hashes = await Task.WhenAll(tasks);
-                foreach (var h in hashes)
+                else
                 {
-                    logger.LogInformation($"[Invoke] Tx: {h}");
+                    // use legacy gas price: prefer event gasPrice; fallback to config; fallback to 5 gwei
+                    BigInteger gp = eventGasPrice;
+                    if (gp <= 0) gp = autoGas ? gp : gasPriceWeiCfg;
+                    if (gp <= 0) gp = new BigInteger(5_000_000_000L);
+
+                    logger.LogInformation(
+                        "[TransactionService] 触发项目! -> 请求发送交易(旧版): srcTx={Tx} type=legacy gasPrice={GasPriceGwei:0.###} gwei, gasLimit={GasLimit}, accounts={Accounts}, target={Target}",
+                        tx, ToGwei(gp), gasLimit, accountServices.Count, targetContract);
+
+                    var tasks = new List<Task<string>>(accountServices.Count);
+                    foreach (var account in accountServices)
+                    {
+                        tasks.Add(account.InvokeAsync(targetContract, gp, gasLimit, dataHex));
+                    }
+
+                    var results = await Task.WhenAll(tasks);
+                    for (int i = 0; i < results.Length; i++)
+                    {
+                        var h = results[i];
+                        if (!string.IsNullOrEmpty(h))
+                            logger.LogInformation("[TransactionService] 已使用你的私钥发送交易 (legacy): tx={TxHash}", h);
+                        else
+                            logger.LogWarning("[TransactionService] 发送返回空哈希 (account idx={Idx})", i);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "[Invoke] 发送自定义 data 失败");
+                logger.LogError(ex, "[TransactionService] 调用失败");
             }
         }
 
         public Task UpdateAsync() => Task.CompletedTask;
 
-        // Helpers
-        private static string NormalizeHex(string s) =>
-            string.IsNullOrWhiteSpace(s) ? null : (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s : "0x" + s);
+        // --- helpers ---
 
-        private static BigInteger ParseHexWei(string hex)
+        private static string NormalizeHex(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+            return s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s : "0x" + s;
+        }
+
+        private static BigInteger ParseWeiHex(string hex)
         {
             if (string.IsNullOrEmpty(hex)) return 0;
             var t = hex.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hex[2..] : hex;
@@ -140,13 +225,10 @@ namespace Soha.Service.Project
             return BigInteger.Parse("0" + t, NumberStyles.HexNumber);
         }
 
-        private static BigInteger PickGasFromEvent(string gasPriceHex, string maxFeePerGasHex)
+        private static double ToGwei(BigInteger wei)
         {
-            var legacy = ParseHexWei(gasPriceHex);
-            if (legacy > 0) return legacy;
-            var maxFee = ParseHexWei(maxFeePerGasHex);
-            if (maxFee > 0) return maxFee;
-            return 0;
+            // convert via double to avoid decimal/BigInteger operator issues
+            return (double)wei / 1e9d;
         }
     }
 }

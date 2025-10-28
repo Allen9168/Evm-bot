@@ -2,10 +2,7 @@
 Enabled: true
 
 # 项目名称(每个项目必填 格式: 链-币名字)
-Name: "BSC-Invoke-项目"
-
-# （可留可删，本模式不用 SwapRouter）
-SwapRouter: "0x10ed43c718714eb63d5aa57b78b54704e256024e"
+Name: "BSC-Transaction-项目"
 
 # 项目模式(地址监控)
 Model: "Transaction"          # ← 修正拼写
@@ -19,21 +16,7 @@ Contract: "0xe540980f909873370bbe9c19db7c3b5ba4def701"
 AccountGroups:
   - "Main"
 
-# （可留可删，本模式不会用到 Transaction/Exact 做 Swap）
-Transaction:
-  Cost: 0.01
-  Count: 1
-  OutTime: 1000
-
-Exact:
-  Send: "0x55d398326f99059fF775485246999027B3197955"
-  AmountOutMin: 100
-  GasCount: 500000
-  OutTime: 1000
-
 # 新增：主动调用用的参数（最关键）
 Invoke:
-  # 不写表示 AutoGas：跟踪事件里的 gasPrice（或 maxFeePerGas）
-  #GasPrice: 5          # gwei，可选
-  #GasCount: 500000     # gas limit
+  GasCount: 100000     # gas数量
   Data: "0x000"        # 你的完整 calldata（MethodID+ABI参数）
