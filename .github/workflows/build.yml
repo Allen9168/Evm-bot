@@ -1,95 +1,126 @@
 name: build-and-release
 
 on:
-  push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
+  # 手动触发
   workflow_dispatch:
 
-env:
-  DOTNET_NOLOGO: true
-  DOTNET_CLI_TELEMETRY_OPTOUT: 1
-  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
-  APP_PROJECT: Soha.csproj           # 你的主项目文件
-  APP_NAME: Soha                     # 产物名（生成 Soha.exe / Soha）
+  # 推送 tag（如 v1.0.0）会自动构建+发版
+  push:
+    tags: [ 'v*' ]
+
+  # 也支持在 GitHub UI 上 “Publish release” 时触发
+  release:
+    types: [ published ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
-        rid: [ "win-x64", "linux-x64", "linux-arm64" ]
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact_ext: tar.gz
+            shell: bash
+          - os: windows-latest
+            rid: win-x64
+            artifact_ext: zip
+            shell: pwsh
+
+    env:
+      PROJECT: Soha.csproj
+      CONFIG: Release
+      OUT_DIR: out
+      APP_NAME: Soha
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 6 SDK
+      - name: Setup .NET 6.x
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
             6.0.x
 
       - name: Restore
-        run: dotnet restore "${{ env.APP_PROJECT }}"
+        run: dotnet restore ${{ env.PROJECT }}
+        shell: ${{ matrix.shell }}
 
-      - name: Publish (self-contained single-file)
+      - name: Build
+        run: dotnet build ${{ env.PROJECT }} -c ${{ env.CONFIG }} --nologo
+        shell: ${{ matrix.shell }}
+
+      - name: Publish self-contained single-file
         run: |
-          dotnet publish "${{ env.APP_PROJECT }}" -c Release -r ${{ matrix.rid }} \
-            -p:PublishSingleFile=true \
-            -p:SelfContained=true \
-            -p:IncludeNativeLibrariesForSelfExtract=true \
-            -p:DebugType=None -p:DebugSymbols=false \
-            -o "out/${{ matrix.rid }}"
-
-      # 规范化产物文件名（Windows 加 .exe，Linux 无后缀）
-      - name: Rename artifact
+          dotnet publish ${{ env.PROJECT }} -c ${{ env.CONFIG }} \
+            -r ${{ matrix.rid }} --self-contained true \
+            -p:PublishSingleFile=true -p:PublishTrimmed=false \
+            -p:AssemblyName=${{ env.APP_NAME }} \
+            -o ${{ env.OUT_DIR }}/${{ matrix.rid }}/app
         shell: bash
+
+      # 将 Config/ 复制到产物目录（与可执行文件同级），这样发布包内就带上配置
+      - name: Copy Config folder (Linux)
+        if: matrix.rid == 'linux-x64'
         run: |
-          OUT="out/${{ matrix.rid }}"
-          if [[ "${{ matrix.rid }}" == win-* ]]; then
-            EXE=$(find "$OUT" -maxdepth 1 -type f -name "*.exe" | head -n1)
-            if [[ -z "$EXE" ]]; then echo "No exe found"; exit 1; fi
-            mv "$EXE" "$OUT/${{ env.APP_NAME }}.exe"
-          else
-            BIN=$(find "$OUT" -maxdepth 1 -type f ! -name "*.dll" ! -name "*.pdb" ! -name "*.xml" ! -name "*.json" | head -n1)
-            if [[ -z "$BIN" ]]; then
-              # dotnet publish 可能输出同名可执行（无后缀），容错处理
-              BIN="$OUT/${{ env.APP_NAME }}"
-              if [[ ! -f "$BIN" ]]; then
-                # fallback: 找到同名主程序
-                BIN_CAND=$(find "$OUT" -maxdepth 1 -type f -name "${{ env.APP_NAME }}" -o -name "${{ env.APP_NAME }}.*" | head -n1)
-                if [[ -n "$BIN_CAND" ]]; then BIN="$BIN_CAND"; fi
-              fi
-            fi
-            chmod +x "$BIN"
-            mv "$BIN" "$OUT/${{ env.APP_NAME }}"
+          if [ -d "Config" ]; then
+            mkdir -p "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/Config"
+            cp -R Config/* "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/Config/" || true
           fi
+          chmod +x "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/${{ env.APP_NAME }}"
+        shell: bash
+
+      - name: Copy Config folder (Windows)
+        if: matrix.rid == 'win-x64'
+        run: |
+          if (Test-Path "Config") {
+            New-Item -ItemType Directory -Force -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\Config" | Out-Null
+            Copy-Item -Recurse -Force "Config\*" "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\Config\" -ErrorAction SilentlyContinue
+          }
+        shell: pwsh
+
+      # 打包（不再 mv/rename，可执行文件名保持为 APP_NAME）
+      - name: Pack Linux
+        if: matrix.rid == 'linux-x64'
+        run: |
+          tar -czf "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}" \
+            -C "${{ env.OUT_DIR }}/${{ matrix.rid }}/app" .
+        shell: bash
+
+      - name: Pack Windows
+        if: matrix.rid == 'win-x64'
+        run: |
+          Compress-Archive -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\*" `
+            -DestinationPath "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}"
+        shell: pwsh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: evm-bot-${{ matrix.rid }}
-          path: out/${{ matrix.rid }}/*
+          name: ${{ env.APP_NAME }}-${{ matrix.rid }}
+          path: |
+            ${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    # 当是 tag push 或者 release event 时才跑
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
-        with:
-          path: dist
 
-      - name: Show files
-        run: find dist -type f -maxdepth 3 -print
+      - name: Show downloaded files
+        run: ls -R
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: false
-          prerelease: false
           files: |
-            dist/**/*
+            Soha-linux-x64/Soha-linux-x64.tar.gz
+            Soha-win-x64/Soha-win-x64.zip
+          # 如果是 release 事件，使用该 release；如果是 tag push，会自动创建新的 release
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
