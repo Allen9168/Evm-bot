@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rid: [win-x64, linux-x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - run: dotnet restore Soha.csproj
+      - run: dotnet publish Soha.csproj -c Release -r ${{ matrix.rid }} --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false
+
+      - name: Tar ball (linux only)
+        if: matrix.rid == 'linux-x64'
+        run: |
+          cd bin/Release/net6.0/linux-x64/publish
+          tar -czf soha-linux-x64.tar.gz *
+
+      - name: Zip (windows only)
+        if: matrix.rid == 'win-x64'
+        run: |
+          cd bin/Release/net6.0/win-x64/publish
+          powershell Compress-Archive -Path * -DestinationPath soha-win-x64.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bin/Release/net6.0/win-x64/publish/soha-win-x64.zip
+            bin/Release/net6.0/linux-x64/publish/soha-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
