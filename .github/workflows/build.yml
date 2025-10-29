@@ -1,0 +1,112 @@
+name: build-and-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [ 'v*' ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact_ext: tar.gz
+          - os: windows-latest
+            rid: win-x64
+            artifact_ext: zip
+
+    env:
+      PROJECT: Soha.csproj
+      CONFIG: Release
+      OUT_DIR: out
+      APP_NAME: Soha
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 6.x
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+
+      - name: Restore
+        run: dotnet restore ${{ env.PROJECT }}
+
+      - name: Build
+        run: dotnet build ${{ env.PROJECT }} -c ${{ env.CONFIG }} --nologo
+
+      # 单行 publish，兼容两端 shell（路径用 / 也能被 dotnet 识别）
+      - name: Publish (self-contained, single-file)
+        run: >
+          dotnet publish ${{ env.PROJECT }} -c ${{ env.CONFIG }}
+          -r ${{ matrix.rid }} --self-contained true
+          -p:PublishSingleFile=true -p:PublishTrimmed=false
+          -p:AssemblyName=${{ env.APP_NAME }}
+          -o ${{ env.OUT_DIR }}/${{ matrix.rid }}/app
+
+      # 复制 Config 到产物
+      - name: Copy Config (Linux)
+        if: matrix.rid == 'linux-x64'
+        run: |
+          if [ -d "Config" ]; then
+            mkdir -p "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/Config"
+            cp -R Config/* "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/Config/" || true
+          fi
+          chmod +x "${{ env.OUT_DIR }}/${{ matrix.rid }}/app/${{ env.APP_NAME }}"
+
+      - name: Copy Config (Windows)
+        if: matrix.rid == 'win-x64'
+        run: |
+          if (Test-Path "Config") {
+            New-Item -ItemType Directory -Force -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\Config" | Out-Null
+            Copy-Item -Recurse -Force "Config\*" "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\Config\" -ErrorAction SilentlyContinue
+          }
+        shell: pwsh
+
+      # 打包
+      - name: Pack Linux
+        if: matrix.rid == 'linux-x64'
+        run: |
+          tar -czf "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}" \
+            -C "${{ env.OUT_DIR }}/${{ matrix.rid }}/app" .
+
+      - name: Pack Windows
+        if: matrix.rid == 'win-x64'
+        run: |
+          Compress-Archive -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\*" `
+            -DestinationPath "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.rid }}
+          path: ${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Show downloaded files
+        run: ls -R
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Soha-linux-x64/Soha-linux-x64.tar.gz
+            Soha-win-x64/Soha-win-x64.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
