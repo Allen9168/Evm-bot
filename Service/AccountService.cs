@@ -43,49 +43,44 @@ namespace Soha.Service
         /// Initialize account with wallet & private key.
         /// Stores fields correctly and fetches chainId and current nonce.
         /// </summary>
-        public async Task RegisterAsync(string walletAddress, string privateKeyHex)
+        public async Task<bool> RegisterAsync(string walletAddress, string privateKeyHex)
         {
+            // 1) input checks (no throw)
+            if (string.IsNullOrWhiteSpace(privateKeyHex))
+            {
+                logger.LogError("[AccountService] 私钥不能为空.");
+                Environment.Exit(1);
+            }
+
+            var keyNoPrefix = privateKeyHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? privateKeyHex.Substring(2)
+                : privateKeyHex;
+
+            if (keyNoPrefix.Length != 64 || !Regex.IsMatch(keyNoPrefix, "^[0-9a-fA-F]+$"))
+            {
+                logger.LogError("[AccountService] 私钥格式不对");
+                Environment.Exit(1);
+            }
+
             try
             {
-                if (string.IsNullOrWhiteSpace(privateKeyHex))
-                    throw new ArgumentException("Private key cannot be null or empty.");
-
-                // normalize private key (strip 0x, must be 64 hex chars)
-                var keyNoPrefix = privateKeyHex.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
-                    ? privateKeyHex.Substring(2)
-                    : privateKeyHex;
-
-                if (keyNoPrefix.Length != 64 || !Regex.IsMatch(keyNoPrefix, "^[0-9a-fA-F]+$"))
-                    throw new FormatException("Invalid private key format. Expect 64 hex characters.");
-
-                // create key and assign fields
+                // 2) initialize key & on-chain values
                 ethECKey = new EthECKey(keyNoPrefix);
-                this.privateKey = keyNoPrefix; // keep without 0x
-                this.chainId = await rpcClient.GetChainIdAsync();
+                privateKey = keyNoPrefix; // store without 0x
+                chainId = await rpcClient.GetChainIdAsync();
 
-                // checksum address
-                this.wallet = addressUtil.ConvertToChecksumAddress(walletAddress);
+                wallet = addressUtil.ConvertToChecksumAddress(walletAddress);
+                TransactionCount = await rpcClient.GetTransactionCountAsync(wallet);
 
-                // get current nonce
-                this.TransactionCount = await rpcClient.GetTransactionCountAsync(this.wallet);
-
-                logger.LogInformation("Private key initialized successfully.");
-                logger.LogInformation("    Wallet: {Wallet}", this.wallet);
-            }
-            catch (FormatException ex)
-            {
-                logger.LogError(ex, "Invalid private key format.");
-                throw;
-            }
-            catch (ArgumentException ex)
-            {
-                logger.LogError(ex, "Invalid argument while initializing account.");
-                throw;
+                logger.LogInformation("私钥初始化成功");
+                logger.LogInformation("    Wallet: {Wallet}", wallet);
+                return true;
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Unexpected error while initializing account.");
-                throw;
+                // 3) swallow exception, log error, and return false (no stacktrace flood up the stack)
+                logger.LogError(ex, "[AccountService] 私钥初始化失败");
+                return false;
             }
         }
 
