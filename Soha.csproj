@@ -18,10 +18,6 @@
 	<ItemGroup>
 		<None Remove="config.yaml" />
 		<None Remove="Config\Account\Main.yaml" />
-		<None Remove="Config\Project\Invoke-Burning.yaml" />
-		<None Remove="Config\Project\Invoke.yaml" />
-		<None Remove="Config\Project\Swap-Burning.yaml" />
-		<None Remove="Config\Project\Swap.yaml" />
 		<None Remove="Config\Project\Transaction.yaml" />
 		<None Remove="logSetting.yaml" />
 	</ItemGroup>
@@ -34,23 +30,10 @@
 		<EmbeddedResource Include="Config\Account\Main.yaml">
 		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</EmbeddedResource>
-		<EmbeddedResource Include="Config\Project\Invoke-Burning.yaml">
-		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</EmbeddedResource>
-		<EmbeddedResource Include="Config\Project\Invoke.yaml">
-		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</EmbeddedResource>
 		<EmbeddedResource Include="Config\Project\Transaction.yaml">
 		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</EmbeddedResource>
-		<EmbeddedResource Include="Config\Project\Swap.yaml">
-		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</EmbeddedResource>
 		<EmbeddedResource Include="Config\logSetting.yaml">
-		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-		</EmbeddedResource>
-		<EmbeddedResource Include="Config\Project\Swap-Burning.yaml">
-		  <SubType>Code</SubType>
 		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</EmbeddedResource>
 	</ItemGroup>

@@ -2,7 +2,7 @@
 Enabled: true
 
 # 项目名称(每个项目必填 格式: 链-币名字)
-Name: "BSC-Transaction-项目"
+Name: "EVM调用监控项目"
 
 # 项目模式(地址监控)
 Model: "Transaction"          # ← 修正拼写
