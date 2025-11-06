@@ -24,7 +24,7 @@ namespace SoHa_Bot.Model
         public SellConfigModel? Sell { get; set; }
         public ApproveConfigModel? Approve { get; set; }
         public string? Sender { get;  set; }
-        public MonitorConfig Monitor { get; set; }
+        public MonitorConfig? Monitor { get; set; }
 #nullable disable
     }
 }

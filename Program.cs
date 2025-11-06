@@ -74,7 +74,7 @@ namespace Soha
 
 
 
-            containerBuilder.Register(o =>
+            _ = containerBuilder.Register(static o =>
             {
                 var logger = o.Resolve<ILogger<Program>>();
                 string uriStr = ConfigurationBuilder.GetValue<string>("addres");
@@ -83,12 +83,14 @@ namespace Soha
 
                 try
                 {
-                    clientWebSocket.ConnectAsync(uri, CancellationToken.None).GetAwaiter().GetResult();
+                    clientWebSocket.ConnectAsync(uri, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
                     logger.LogInformation("成功连接到 RPC: {uriStr}", uriStr);
                 }
                 catch (UriFormatException)
                 {
-                    logger.LogInformation("RPC 地址格式错误: {uriStr}",uriStr);
+                    logger.LogInformation("RPC 地址格式错误: {uriStr}", uriStr);
                     Environment.Exit(1);
                 }
                 catch (System.Net.WebSockets.WebSocketException ex)

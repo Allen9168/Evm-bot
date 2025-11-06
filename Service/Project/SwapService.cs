@@ -11,27 +11,18 @@ using System.Threading.Tasks;
 
 namespace Soha.Service.Project
 {
-    public class SwapService : IProject
+    public class SwapService(
+        ILogger<SwapService> logger,
+        AccountManager accountManager,
+        TokenService tokenService,
+        ChainService chainService) : IProject
     {
-        private readonly ILogger logger;
-        private readonly TokenService tokenService;
-        private readonly ChainService chainService;
-        private readonly AccountManager accountManager;
+        private readonly ILogger logger = logger;
+        private readonly TokenService tokenService = tokenService;
+        private readonly ChainService chainService = chainService;
+        private readonly AccountManager accountManager = accountManager;
 
-        private readonly List<AccountService> accountServices = new();
-
-        public SwapService(
-            ILogger<SwapService> logger,
-            AccountManager accountManager,
-            TokenService tokenService,
-            ChainService chainService)
-        {
-            this.logger = logger;
-            this.tokenService = tokenService;
-            this.chainService = chainService;
-            this.accountManager = accountManager;
-        }
-
+        private readonly List<AccountService> accountServices = [];
         private ISwapFactory SwapFactory;
         private ProjectConfig projectConfig;
 
@@ -41,9 +32,6 @@ namespace Soha.Service.Project
 
         private int repeat;
         private int outTime;
-
-        private Dictionary<string, decimal>? Liquidity;
-
         private decimal LiquidityETHAmount;
         private bool LiquidityEnabled, LiquidityETHEnabled;
 
@@ -64,6 +52,8 @@ namespace Soha.Service.Project
         private BigInteger sellGas;
 
         private bool TransferETHPair;
+
+        public Dictionary<string, decimal> Liquidity1 { get; set; }
 
         public async Task StartAsync(ProjectConfig projectConfig)
         {
@@ -159,14 +149,14 @@ namespace Soha.Service.Project
                 LiquidityEnabled = projectConfig.Liquiditys.Liquidity.Enabled;
                 if (LiquidityEnabled)
                 {
-                    Liquidity = new(StringComparer.OrdinalIgnoreCase);
+                    Liquidity1 = new(StringComparer.OrdinalIgnoreCase);
                     SwapFactory.AddLiquidityEvent += SwapFactory_AddLiquidityEventAsync;
                     logger.LogInformation("[Liquidity] enabled=True");
 
                     foreach (string token in projectConfig.Liquiditys.Liquidity.Token)
                     {
                         var dec = await tokenService.TokenDecimalsAsync(token);
-                        Liquidity[token] = projectConfig.Liquiditys.Liquidity.Amount * dec;
+                        Liquidity1[token] = projectConfig.Liquiditys.Liquidity.Amount * dec;
                         logger.LogInformation("  token={Token} | threshold={Amount}", token, projectConfig.Liquiditys.Liquidity.Amount);
                     }
                 }
@@ -259,10 +249,10 @@ namespace Soha.Service.Project
                         tx,
                         from,
                         WeiToGwei(gasPrice),
-                        value / ethDecimalTask.Result,
-                        ethNameTask.Result,
-                        tokenNameTask.Result,
-                        amountTokenDesired / tokenDecimalTask.Result);
+                        value / await ethDecimalTask,
+                        await ethNameTask,
+                        await tokenNameTask,
+                        amountTokenDesired / await tokenDecimalTask);
                 }
                 catch (Exception ex)
                 {
@@ -305,7 +295,7 @@ namespace Soha.Service.Project
 
             if (doBuy)
             {
-                if (Liquidity != null && Liquidity.TryGetValue(routeToken, out decimal threshold))
+                if (Liquidity1 != null && Liquidity1.TryGetValue(routeToken, out decimal threshold))
                 {
                     if (balance >= threshold)
                     {
@@ -337,10 +327,10 @@ namespace Soha.Service.Project
                         tx,
                         from,
                         WeiToGwei(gasPrice),
-                        nameATask.Result,
-                        nameBTask.Result,
-                        amountADesired / decATask.Result,
-                        amountBDesired / decBTask.Result);
+                        await nameATask,
+                        await nameBTask,
+                        amountADesired / await decATask,
+                        amountBDesired / await decBTask);
                 }
                 catch (Exception ex)
                 {
@@ -369,13 +359,13 @@ namespace Soha.Service.Project
 
             if (send.Equals(routeToken, StringComparison.OrdinalIgnoreCase))
             {
-                buyPath = new[] { routeToken, buyToken };
-                sellPath.AddRange(new[] { buyToken, routeToken });
+                buyPath = [routeToken, buyToken];
+                sellPath.AddRange([buyToken, routeToken]);
             }
             else
             {
-                buyPath = new[] { send, routeToken, buyToken };
-                sellPath.AddRange(new[] { buyToken, routeToken, send });
+                buyPath = [send, routeToken, buyToken];
+                sellPath.AddRange([buyToken, routeToken, send]);
             }
 
             foreach (var accountService in accountServices)
@@ -512,7 +502,7 @@ namespace Soha.Service.Project
                                         SwapFactory,
                                         balance,
                                         new BigInteger(projectConfig.Sell?.AmountOutMin ?? 0),
-                                        sellPath.ToArray(),
+                                        [.. sellPath],
                                         sellGas,
                                         gasCount,
                                         sellBlock,
