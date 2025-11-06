@@ -88,13 +88,17 @@ Evm-Bot/                                      // 项目根
 
 ### 配置教程
 下载打包的文件后,解压会有三个文件
+```
 ├─Soha                               // 主程序
 ├─logs                              // 日志文件夹
 ├─Config                              // 配置文件
+```
 主程序通过控制台运行,建议在linux运行,如果在windows,需要使用CMD等运行软件
 随后进入Config配置文件,大部分配置都是在里面操作
 1:配置好wss
+```
 在Config/config.yaml
+```
 ```
 addres : "wss://ethereum-sepolia.core.chainstack.com/ced486101f05ba9f9bb0bd11112c826f"
 ```
