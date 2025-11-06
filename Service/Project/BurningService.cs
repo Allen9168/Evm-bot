@@ -19,8 +19,14 @@ namespace Soha.Service.Project
         private readonly AccountManager accountManager;
         private readonly TokenService tokenService;
         private readonly ChainService chainService;
-        private readonly List<AccountService> accountServices = new List<AccountService>();
-        public BurningService(ILogger<InvokeService> logger, AccountManager accountManager, TokenService tokenService, ChainService chainService)
+
+        private readonly List<AccountService> accountServices = new();
+
+        public BurningService(
+            ILogger<BurningService> logger,
+            AccountManager accountManager,
+            TokenService tokenService,
+            ChainService chainService)
         {
             this.logger = logger;
             this.accountManager = accountManager;
@@ -28,292 +34,495 @@ namespace Soha.Service.Project
             this.chainService = chainService;
         }
 
-        #region Exact
-        private BigInteger InvokegasPrice;
-        private BigInteger[] SwapgasPrice;
-        private BigInteger gasCount;
+        // ---- legacy gas (invoke / swap) ----
+        private BigInteger invokeGasPriceWei;
+        private BigInteger[] swapGasPriceWei;
+        private BigInteger gasCountOrLimit; // legacy uses GasCount; 1559 uses GasLimit
+
+        // ---- 1559 gas (invoke) ----
+        private bool use1559Invoke;
+        private BigInteger maxPriorityFeePerGasWei;
+        private BigInteger maxFeePerGasWei;
+
+        // ---- swap amounts (legacy only here) ----
         private BigInteger amountIn, amountOutMin;
-        #endregion
 
         private string swapRoute, contract;
-        private string[] BuyPath, SellPath;
+        private string[] buyPath, sellPath;
         private string data;
 
-        private uint? StartTime, StartBlock;
-        private ulong Duration;
+        private uint? startTimeUnix, startBlock; // config StartTime/StartBlock
+        private ulong durationSeconds;
 
-        private BurningConfigModel burningConfigModel;
-
-        private ISwapFactory SwapFactory;
+        private BurningConfigModel burningCfg;
         private ProjectConfig projectConfig;
 
-        public bool EthPair;
-        private string BuyContract;
+        private ISwapFactory swapFactory;
+        public bool ethPair;
+        private string buyTokenContract;
 
-        public Func<Task> BurningMothed;    
+        private Func<Task> burningMethod;
 
-        #region 延迟
-        private int delayTime, delayBlock;
-        #endregion
+        // delay controls
+        private int delayTimeMs;
+        private int delayBlock; // reserved
 
-        private bool Approve;
-        private bool AutoSell;
-        private BigInteger sellGas;
+        // optional approve/sell
+        private bool approveEnabled;
+        private bool autoSell;
+        private BigInteger sellGasWei;
+
         public async Task StartAsync(ProjectConfig projectConfig)
         {
-            if (!projectConfig.Enabled)
-            {
-                return;
-            }
+            if (!projectConfig.Enabled) return;
 
             this.projectConfig = projectConfig;
+
+            // collect accounts
             string groupList = string.Empty;
             foreach (string accountGroup in projectConfig.AccountGroups)
             {
-                List<AccountService> accountServices = accountManager.GetAccount(accountGroup);
-                this.accountServices.AddRange(accountServices);
-                if (string.IsNullOrEmpty(groupList))
+                var list = accountManager.GetAccount(accountGroup);
+                accountServices.AddRange(list);
+                groupList = string.IsNullOrEmpty(groupList) ? accountGroup : $"{groupList},{accountGroup}";
+            }
+
+            logger.LogInformation("[{Name}] Starting BurningService", projectConfig.Name);
+            logger.LogInformation("  AccountGroups: {Groups}  Accounts: {Count}", groupList, accountServices.Count);
+
+            burningCfg = projectConfig.Burning ?? throw new InvalidOperationException("Burning config is required.");
+            logger.LogInformation("  Mode: {Action}", burningCfg.Action);
+
+            if (burningCfg.Action.Equals("swap", StringComparison.OrdinalIgnoreCase))
+            {
+                // SWAP path (legacy gas list)
+                burningMethod = SwapTaskAsync;
+
+                if (projectConfig.SwapRouter == null)
+                    throw new InvalidOperationException("SwapRouter is required for swap mode.");
+
+                swapRoute = projectConfig.SwapRouter.ToLowerInvariant();
+                swapFactory = Soha.SwapFactory.SwapFactory.SwapRouteFactory(swapRoute);
+
+                if (burningCfg.Swap?.GasPrice == null || burningCfg.Swap.GasPrice.Count == 0)
+                    throw new InvalidOperationException("Burning.Swap.GasPrice list is required.");
+
+                swapGasPriceWei = new BigInteger[burningCfg.Swap.GasPrice.Count];
+                for (int i = 0; i < swapGasPriceWei.Length; i++)
                 {
-                    groupList = string.Concat(groupList, accountGroup);
+                    // gwei -> wei (GasPrice list usually is integer gwei)
+                    swapGasPriceWei[i] = ToWeiFromGwei(burningCfg.Swap.GasPrice[i]);
+                }
+
+                gasCountOrLimit = new BigInteger(burningCfg.Swap.GasCount ?? 210000);
+
+                // amounts use token decimals helper (assumes tokenService returns base unit multiplier)
+                var swap = burningCfg.Swap;
+                var decIn = await tokenService.TokenDecimalsAsync(swap.Path[0]);
+                var decOut = await tokenService.TokenDecimalsAsync(swap.Path[1]);
+                amountIn = new BigInteger(swap.AmountIn * decIn);
+                amountOutMin = new BigInteger(swap.AmountOutMin * decOut);
+
+                buyPath = swap.Path;
+                buyTokenContract = buyPath[^1];
+                ethPair = buyPath[0].Equals(swapFactory.ETH, StringComparison.OrdinalIgnoreCase);
+
+                logger.LogInformation("  Router: {Router}", swapRoute);
+                logger.LogInformation("  Swap: amountIn={In} minOut={Out} path={Path}", swap.AmountIn, swap.AmountOutMin, string.Join(" -> ", buyPath));
+                logger.LogInformation("  GasCount: {GasCount}  GasPrice list (gwei): {List}", gasCountOrLimit, string.Join(",", burningCfg.Swap.GasPrice));
+            }
+            else if (burningCfg.Action.Equals("invoke", StringComparison.OrdinalIgnoreCase))
+            {
+                // INVOKE path (legacy or 1559)
+                burningMethod = InvokeTaskAsync;
+
+                contract = projectConfig.Contract?.ToLowerInvariant() ?? throw new InvalidOperationException("Contract is required for invoke mode.");
+                var inv = burningCfg.Invoke ?? throw new InvalidOperationException("Burning.Invoke is required for invoke mode.");
+
+                use1559Invoke = inv.Use1559 ?? false;
+                data = NormalizeHex(inv.Data);
+
+                if (string.IsNullOrWhiteSpace(data))
+                    throw new InvalidOperationException("Invoke.Data is required.");
+
+                if (use1559Invoke)
+                {
+                    // EIP-1559 (decimal? in gwei)
+                    gasCountOrLimit = new BigInteger(inv.GasLimit ?? 120000);
+                    maxPriorityFeePerGasWei = ToWeiFromGwei(inv.MaxPriorityFeePerGas ?? 1.0m);
+                    maxFeePerGasWei = ToWeiFromGwei(inv.MaxFeePerGas ?? 30.0m);
+
+                    logger.LogInformation("  Invoke 1559:");
+                    logger.LogInformation("    Contract: {Contract}", contract);
+                    logger.LogInformation("    GasLimit: {Limit}", gasCountOrLimit);
+                    logger.LogInformation("    MaxPriorityFeePerGas: {MP} gwei  MaxFeePerGas: {MF} gwei",
+                        inv.MaxPriorityFeePerGas ?? 1.0m, inv.MaxFeePerGas ?? 30.0m);
+                    logger.LogInformation("    Data: {Data}", data.Length > 66 ? data[..66] + "..." : data);
                 }
                 else
                 {
-                    groupList = string.Concat(groupList, ",", accountGroup);
+                    // Legacy (ulong? in gwei)
+                    var gpGwei = inv.GasPrice ?? 5UL;
+                    invokeGasPriceWei = ToWeiFromGwei(gpGwei);
+                    gasCountOrLimit = new BigInteger(inv.GasCount ?? 210000);
+
+                    logger.LogInformation("  Invoke legacy:");
+                    logger.LogInformation("    Contract: {Contract}", contract);
+                    logger.LogInformation("    GasPrice: {GP} gwei  GasCount: {GC}", gpGwei, inv.GasCount ?? 210000);
+                    logger.LogInformation("    Data: {Data}", data.Length > 66 ? data[..66] + "..." : data);
                 }
             }
-            logger.LogInformation($"[项目名 : {projectConfig.Name}]");
-            logger.LogInformation($"    账号组 : {groupList} 账号数量 : {accountServices.Count}");
-            logger.LogInformation($"    模式   : {projectConfig.Burning.Action}");
-            burningConfigModel = projectConfig.Burning;
-
-            if (projectConfig.Burning.Action.Equals("swap", StringComparison.OrdinalIgnoreCase))
+            else
             {
-                BurningMothed = SwapTaskAsync;
-                SwapConfigModel swapConfig = projectConfig.Burning.Swap;
-
-                swapRoute = projectConfig.SwapRouter.ToLower();
-                SwapFactory = Soha.SwapFactory.SwapFactory.SwapRouteFactory(swapRoute);
-
-                SwapgasPrice = new BigInteger[burningConfigModel.Swap.GasPrice.Count];
-                for (int i = 0; i < SwapgasPrice.Length; i++)
-                {
-                    ulong gas = burningConfigModel.Swap.GasPrice[i];
-                    SwapgasPrice[i] = new BigInteger(gas * 1000000000);
-                }
-                gasCount = new BigInteger(burningConfigModel.Swap.GasCount.Value);
-                amountIn = new BigInteger(swapConfig.AmountIn * await tokenService.TokenDecimalsAsync(swapConfig.Path[0]));
-                amountOutMin = new BigInteger(swapConfig.AmountOutMin * await tokenService.TokenDecimalsAsync(swapConfig.Path[1]));
-
-                BuyPath = swapConfig.Path;
-                BuyContract = BuyPath[^1];
-                EthPair = BuyPath[0].Equals(SwapFactory.ETH, StringComparison.OrdinalIgnoreCase);
-
-                logger.LogInformation($"    路由器  : {swapRoute}");
-                logger.LogInformation($"    出价    : {swapConfig.AmountIn}  滑点 : {swapConfig.AmountOutMin}  购买 : {string.Join(" -> ", BuyPath)} ");
-            }
-            else if (projectConfig.Burning.Action.Equals("invoke", StringComparison.OrdinalIgnoreCase))
-            {
-                contract = projectConfig.Contract?.ToLower();
-
-                InvokegasPrice = new BigInteger(burningConfigModel.Invoke.GasPrice.Value * 1000000000);
-                gasCount = new BigInteger(burningConfigModel.Invoke.GasCount.Value);
-
-                BurningMothed = InvokeTaskAsync;
-                data = projectConfig.Burning.Invoke.Data;
-                logger.LogInformation($"      合约地址: { contract}");
-                logger.LogInformation($"      数据 : {data} ");
+                throw new NotSupportedException("Burning.Action must be 'swap' or 'invoke'.");
             }
 
-            StartTime = burningConfigModel.StartTime;
-            StartBlock = burningConfigModel.StartBlock;
+            // timing controls
+            startTimeUnix = burningCfg.StartTime;
+            startBlock = burningCfg.StartBlock;
+            durationSeconds = burningCfg.Duration;
 
-
-            if (burningConfigModel.Delay.TimeDelay.HasValue)
+            if (burningCfg.Delay != null)
             {
-                delayTime = burningConfigModel.Delay.TimeDelay.Value;
-            }
-            if (burningConfigModel.Delay.BlockDelay.HasValue)
-            {
-                delayBlock = burningConfigModel.Delay.BlockDelay.Value;
+                if (burningCfg.Delay.TimeDelay.HasValue) delayTimeMs = burningCfg.Delay.TimeDelay.Value;
+                if (burningCfg.Delay.BlockDelay.HasValue) delayBlock = burningCfg.Delay.BlockDelay.Value;
             }
 
-            Duration = burningConfigModel.Duration;
-
+            // approve and autosell (optional)
             if (projectConfig.Approve != null)
             {
-                Approve = projectConfig.Approve.Enabled;
-                logger.LogInformation($"  [自动授权]");
-                logger.LogInformation($"      合约      :  {projectConfig.Approve?.Spender ?? swapRoute}  数量 : {projectConfig.Approve?.Value ?? "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}");
+                approveEnabled = projectConfig.Approve.Enabled;
+                logger.LogInformation("  [Approve] enabled={Enabled} spender={Spender} value={ValueHex}",
+                    approveEnabled,
+                    projectConfig.Approve.Spender ?? swapRoute,
+                    projectConfig.Approve.Value ?? "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
             }
+
             if (projectConfig.Sell != null)
             {
-                AutoSell = projectConfig.Sell.Enabled;
-                if (AutoSell)
+                autoSell = projectConfig.Sell.Enabled;
+                if (autoSell)
                 {
                     var sellList = new List<string>();
-                    for (int i = BuyPath.Length - 1; i >= 0; i--)
-                    {
-                        sellList.Add(BuyPath[i]);
-                    }
-                    if (projectConfig.Sell.GasPrice.HasValue)
-                        sellGas = projectConfig.Sell.GasPrice.Value;
-                    else
-                        sellGas = SwapgasPrice.First();
+                    for (int i = buyPath.Length - 1; i >= 0; i--)
+                        sellList.Add(buyPath[i]);
 
                     if (!string.IsNullOrEmpty(projectConfig.Sell.Receive))
                         sellList.Add(projectConfig.Sell.Receive);
-                    SellPath = sellList.ToArray();
 
-                    logger.LogInformation($"  [自动出售]");
-                    logger.LogInformation($"      出售      :  {string.Join(" -> ", SellPath)}");
-                    logger.LogInformation($"      时间延迟  :  {(projectConfig.Sell.Delay.TimeDelay == 0 ? "无" : projectConfig.Sell.Delay.TimeDelay)}           区块延迟 : {(projectConfig.Sell.Delay.BlockDelay == 0 ? "无" : projectConfig.Sell.Delay.BlockDelay)}");
-                    logger.LogInformation($"      出售数量  :  {(projectConfig.Sell.Percentage == 0 ? "全部" : projectConfig.Sell.Percentage.Value)}                 滑点数量 : {projectConfig.Sell?.AmountOutMin}");
-                    logger.LogInformation($"      手续费    :  {(projectConfig.Sell.GasPrice.HasValue ? projectConfig.Sell.GasPrice : "跟踪")}");
+                    sellPath = sellList.ToArray();
+
+                    // gas for sell: use provided or first of swapGasPriceWei
+                    if (projectConfig.Sell.GasPrice.HasValue)
+                        sellGasWei = ToWeiFromGwei(projectConfig.Sell.GasPrice.Value);
+                    else
+                        sellGasWei = (swapGasPriceWei != null && swapGasPriceWei.Length > 0) ? swapGasPriceWei[0] : ToWeiFromGwei(5UL);
+
+                    // pretty print gas gwei
+                    decimal gasGweiForLog = projectConfig.Sell.GasPrice.HasValue
+                        ? (decimal)projectConfig.Sell.GasPrice.Value
+                        : ((swapGasPriceWei != null && swapGasPriceWei.Length > 0) ? WeiToGwei(swapGasPriceWei[0]) : 5m);
+
+                    logger.LogInformation("  [AutoSell] enabled=True");
+                    logger.LogInformation("    Path: {Path}", string.Join(" -> ", sellPath));
+                    logger.LogInformation("    Delay: time={TimeDelay}ms block={BlockDelay}",
+                        projectConfig.Sell.Delay?.TimeDelay ?? 0, projectConfig.Sell.Delay?.BlockDelay ?? 0);
+                    logger.LogInformation("    Percentage: {Pct}%   MinOut: {MinOut}   GasPrice: {GasGwei} gwei",
+                        projectConfig.Sell.Percentage ?? 100,
+                        projectConfig.Sell.AmountOutMin ?? 0,
+                        gasGweiForLog);
                 }
             }
-            logger.LogWarning("!!!请仔细核对上方数据!!!");
+
+            logger.LogWarning("!!! Please double-check the above parameters !!!");
         }
+
         public async Task UpdateAsync()
         {
-            double start_at = 0, end_at = 0;
-            await Task.Run(async () =>
-           {
-               while (projectConfig.Enabled)
-               {
-                   ulong blockNumber = chainService.BlockNumber;
-                   double unixTimestamp = DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1)).TotalSeconds;
-                   if (start_at > 0)
-                   {
-                       await BurningMothed.Invoke();
-                       if (unixTimestamp > end_at)
-                       {
-                           start_at = 0;
-                           logger.LogInformation($"[{projectConfig.Name}] 燃烧结束 ");
-                           return;
-                       }
-                       if (delayTime > 0)
-                           Thread.Sleep(delayTime);
-                       continue;
-                   }
+            double startAt = 0, endAt = 0;
 
-                   if (StartBlock.HasValue)
-                   {
-                       if (blockNumber > StartBlock.Value - 1)
-                       {
-                           start_at = unixTimestamp;
-                           end_at = start_at + Duration;
-                           continue;
-                       }
-                       else
-                       {
-                           ulong block = StartBlock.Value - blockNumber;
-                           logger.LogInformation($"[{projectConfig.Name}] 还需等待 : {block} 块");
-                           Thread.Sleep((int)(block * 800));
-                       }
-                   }
-
-                   if (StartTime.HasValue)
-                   {
-                       if (unixTimestamp >= StartTime)
-                       {
-                           start_at = unixTimestamp;
-                           end_at = start_at + Duration;
-                           continue;
-                       }
-                       else
-                       {
-                           double time = StartTime.Value - unixTimestamp;
-                           logger.LogInformation($"[{projectConfig.Name}] 还需等待 : {time} 秒");
-                           Thread.Sleep((int)(time * 800));
-                       }
-                   }
-               }
-           });
+            // main timed loop
             await Task.Run(async () =>
             {
-                while (AutoSell || Approve)
+                while (projectConfig.Enabled)
                 {
-                    foreach (AccountService accountService in accountServices)
+                    ulong blockNumber = chainService.BlockNumber;
+                    double now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+                    if (startAt > 0)
                     {
-                        BigInteger balance = await accountService.BalanceOfAsync(BuyContract);
-                        if (balance > 0)
+                        await burningMethod.Invoke();
+
+                        if (now > endAt)
                         {
-                            Stop();
-                            if (Approve && !accountService.Approves.TryGetValue(BuyContract, out BigInteger bigInteger))
-                            {
-                                Approve = false;
-                                bigInteger = BigInteger.Parse($"0{projectConfig.Approve.Value ?? "0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}", NumberStyles.HexNumber);
-                                await accountService.ApproveAsync(BuyContract, projectConfig.Approve.Spender ?? swapRoute, bigInteger);
-                            }
-                            if (AutoSell)
-                            {
-                                balance = balance * (projectConfig.Sell.Percentage.Value / 100);
-                                List<Task> sellTasks = new();
-                                ulong? sellBlock = null, sellTime = null;
-                                if (projectConfig.Sell.Delay.BlockDelay.HasValue)
-                                {
-                                    ulong blockNumber = chainService.BlockNumber;
-                                    sellBlock = blockNumber + projectConfig.Sell.Delay.BlockDelay.Value;
-                                }
-                                if (projectConfig.Sell.Delay.TimeDelay.HasValue)
-                                {
-                                    sellTime = (ulong?)(projectConfig.Sell.Delay.TimeDelay.Value * 1000);
-                                }
-                                await accountService.SellTokensForTokensAsync(SwapFactory, balance, new BigInteger(projectConfig.Sell.AmountOutMin.Value), SellPath, sellGas, gasCount, sellBlock, sellTime);
-                            }
+                            startAt = 0;
+                            logger.LogInformation("[{Name}] Burning window finished.", projectConfig.Name);
+                            break;
+                        }
+
+                        if (delayTimeMs > 0)
+                            Thread.Sleep(delayTimeMs);
+
+                        continue;
+                    }
+
+                    if (startBlock.HasValue)
+                    {
+                        if (blockNumber > startBlock.Value - 1)
+                        {
+                            startAt = now;
+                            endAt = startAt + durationSeconds;
+                            continue;
+                        }
+                        else
+                        {
+                            ulong blocksToWait = startBlock.Value - blockNumber;
+                            logger.LogInformation("[{Name}] Waiting for blocks: {Blocks}", projectConfig.Name, blocksToWait);
+                            Thread.Sleep((int)(blocksToWait * 800)); // rough estimate
+                        }
+                    }
+
+                    if (startTimeUnix.HasValue)
+                    {
+                        if (now >= startTimeUnix.Value)
+                        {
+                            startAt = now;
+                            endAt = startAt + durationSeconds;
+                            continue;
+                        }
+                        else
+                        {
+                            double sec = startTimeUnix.Value - now;
+                            logger.LogInformation("[{Name}] Waiting for time: {Seconds}s", projectConfig.Name, sec.ToString("F0"));
+                            Thread.Sleep((int)(sec * 800)); // rough estimate
                         }
                     }
                 }
             });
-        }
-        public async Task InvokeTaskAsync()
-        {
-            List<Task<string>> invokeTasks = new();
-            foreach (AccountService accountService in accountServices)
+
+            // optional approve/sell loop
+            await Task.Run(async () =>
             {
-                Task<string> invokeTask = accountService.InvokeAsync(contract, InvokegasPrice, gasCount, data);
-                invokeTasks.Add(invokeTask);
-            }
-            foreach (var bucket in TaskHelp.Interleaved(invokeTasks))
-            {
-                var t = await bucket;
-                string result = await t;
-                logger.LogInformation($"    [Invoke]  Tx : {result}");
-            }
-        }
-        public async Task SwapTaskAsync()
-        {
-            List<Task<string>> buyTasks = new();
-            foreach (AccountService accountService in accountServices)
-            {
-                Task<string> buyTask;
-                if (EthPair)
+                while (autoSell || approveEnabled)
                 {
-                    for (int i = 0; i < SwapgasPrice.Length; i++)
+                    foreach (var account in accountServices)
                     {
-                        buyTask = accountService.ExactETHForTokensAsync(SwapFactory, amountIn, amountOutMin, BuyPath, SwapgasPrice[i], gasCount);
-                        buyTasks.Add(buyTask);
+                        BigInteger balance = BigInteger.Zero;
+
+                        try
+                        {
+                            if (!string.IsNullOrEmpty(buyTokenContract))
+                                balance = await account.BalanceOfAsync(buyTokenContract);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex, "[BurningService] BalanceOfAsync failed (autoSell/approve loop).");
+                        }
+
+                        if (balance > 0)
+                        {
+                            Stop();
+
+                            if (approveEnabled && !account.Approves.TryGetValue(buyTokenContract, out _))
+                            {
+                                approveEnabled = false;
+                                BigInteger approveValue = ParseHexToBigInteger(projectConfig?.Approve?.Value)
+                                    ?? BigInteger.Parse("0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", NumberStyles.HexNumber);
+
+                                try
+                                {
+                                    await account.ApproveAsync(
+                                        buyTokenContract,
+                                        projectConfig.Approve?.Spender ?? swapRoute,
+                                        approveValue);
+
+                                    logger.LogInformation("[Approve] Sent for token={Token}", buyTokenContract);
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogError(ex, "[BurningService] ApproveAsync failed.");
+                                }
+                            }
+
+                            if (autoSell)
+                            {
+                                try
+                                {
+                                    // percentage
+                                    var pct = projectConfig.Sell?.Percentage ?? 100;
+                                    if (pct <= 0) pct = 100;
+                                    balance = balance * pct / 100;
+
+                                    ulong? sellBlockAt = null, sellTimeMs = null;
+                                    if (projectConfig.Sell?.Delay?.BlockDelay.HasValue == true)
+                                    {
+                                        var cur = chainService.BlockNumber;
+                                        sellBlockAt = cur + (ulong)projectConfig.Sell.Delay.BlockDelay.Value;
+                                    }
+                                    if (projectConfig.Sell?.Delay?.TimeDelay.HasValue == true)
+                                    {
+                                        sellTimeMs = (ulong)(projectConfig.Sell.Delay.TimeDelay.Value);
+                                    }
+
+                                    await account.SellTokensForTokensAsync(
+                                        swapFactory,
+                                        balance,
+                                        new BigInteger(projectConfig.Sell?.AmountOutMin ?? 0),
+                                        sellPath,
+                                        sellGasWei,
+                                        gasCountOrLimit,
+                                        sellBlockAt,
+                                        sellTimeMs);
+
+                                    logger.LogInformation("[AutoSell] Sent.");
+                                }
+                                catch (Exception ex)
+                                {
+                                    logger.LogError(ex, "[BurningService] AutoSell failed.");
+                                }
+                            }
+                        }
+                    }
+
+                    // avoid tight loop
+                    await Task.Delay(1000);
+                }
+            });
+        }
+
+        private async Task InvokeTaskAsync()
+        {
+            var tasks = new List<Task<string>>(accountServices.Count);
+
+            foreach (var account in accountServices)
+            {
+                try
+                {
+                    if (use1559Invoke)
+                    {
+                        tasks.Add(account.Invoke1559Async(
+                            contract,
+                            gasLimit: gasCountOrLimit,
+                            maxPriorityFeePerGas: maxPriorityFeePerGasWei,
+                            maxFeePerGas: maxFeePerGasWei,
+                            data: data));
+                    }
+                    else
+                    {
+                        tasks.Add(account.InvokeAsync(
+                            contract,
+                            gasPrice: invokeGasPriceWei,
+                            gasCount: gasCountOrLimit,
+                            Data: data));
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    for (int i = 0; i < SwapgasPrice.Length; i++)
-                    {
-                        buyTask = accountService.ExactTokensForTokensAsync(SwapFactory, amountIn, amountOutMin, BuyPath, SwapgasPrice[i], gasCount);
-                        buyTasks.Add(buyTask);
-                    }
+                    logger.LogError(ex, "[Invoke] Enqueue failed (account).");
                 }
             }
-            foreach (var bucket in TaskHelp.Interleaved(buyTasks))
+
+            foreach (var bucket in TaskHelp.Interleaved(tasks))
             {
-                var t = await bucket;
-                string result = await t;
-                logger.LogInformation($"    [Buy]  Tx : {result}");
+                try
+                {
+                    var t = await bucket;
+                    var hash = await t;
+                    logger.LogInformation("[Invoke] Tx: {Hash}", hash);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "[Invoke] Send failed.");
+                }
             }
         }
-        private void Stop()
+
+        private async Task SwapTaskAsync()
         {
-            projectConfig.Enabled = false;
+            var tasks = new List<Task<string>>();
+
+            foreach (var account in accountServices)
+            {
+                try
+                {
+                    if (ethPair)
+                    {
+                        // ETH -> token (legacy only here)
+                        for (int i = 0; i < swapGasPriceWei.Length; i++)
+                        {
+                            tasks.Add(account.ExactETHForTokensAsync(
+                                swapFactory, amountIn, amountOutMin, buyPath,
+                                gasPrice: swapGasPriceWei[i],
+                                gasCount: gasCountOrLimit));
+                        }
+                    }
+                    else
+                    {
+                        // token -> token (legacy only here)
+                        for (int i = 0; i < swapGasPriceWei.Length; i++)
+                        {
+                            tasks.Add(account.ExactTokensForTokensAsync(
+                                swapFactory, amountIn, amountOutMin, buyPath,
+                                gasPrice: swapGasPriceWei[i],
+                                gasCount: gasCountOrLimit));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "[Swap] Enqueue failed (account).");
+                }
+            }
+
+            foreach (var bucket in TaskHelp.Interleaved(tasks))
+            {
+                try
+                {
+                    var t = await bucket;
+                    var hash = await t;
+                    logger.LogInformation("[Buy] Tx: {Hash}", hash);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "[Swap] Send failed.");
+                }
+            }
+        }
+
+        private void Stop() => projectConfig.Enabled = false;
+
+        // ------------- helpers -------------
+
+        // gwei (decimal) -> wei
+        private static BigInteger ToWeiFromGwei(decimal gwei)
+        {
+            return new BigInteger(gwei * 1_000_000_000m);
+        }
+
+        // gwei (ulong) -> wei
+        private static BigInteger ToWeiFromGwei(ulong gwei)
+        {
+            return new BigInteger((decimal)gwei * 1_000_000_000m);
+        }
+
+        // wei -> gwei (decimal for logging)
+        private static decimal WeiToGwei(BigInteger wei)
+        {
+            return (decimal)wei / 1_000_000_000m;
+        }
+
+        private static string NormalizeHex(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+            return s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s : "0x" + s;
+        }
+
+        private static BigInteger? ParseHexToBigInteger(string hexOrNull)
+        {
+            if (string.IsNullOrWhiteSpace(hexOrNull)) return null;
+            var t = hexOrNull.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? hexOrNull[2..] : hexOrNull;
+            if (string.IsNullOrEmpty(t)) return null;
+            return BigInteger.Parse("0" + t, NumberStyles.HexNumber);
         }
     }
 }

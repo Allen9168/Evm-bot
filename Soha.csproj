@@ -18,6 +18,7 @@
 	<ItemGroup>
 		<None Remove="config.yaml" />
 		<None Remove="Config\Account\Main.yaml" />
+		<None Remove="Config\Project\Invoke-Burning.yaml" />
 		<None Remove="Config\Project\Transaction.yaml" />
 		<None Remove="logSetting.yaml" />
 	</ItemGroup>
@@ -28,6 +29,9 @@
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</EmbeddedResource>
 		<EmbeddedResource Include="Config\Account\Main.yaml">
+		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</EmbeddedResource>
+		<EmbeddedResource Include="Config\Project\Invoke-Burning.yaml">
 		  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</EmbeddedResource>
 		<EmbeddedResource Include="Config\Project\Transaction.yaml">

@@ -84,22 +84,22 @@ namespace Soha
                 try
                 {
                     clientWebSocket.ConnectAsync(uri, CancellationToken.None).GetAwaiter().GetResult();
-                    logger.LogInformation($"成功连接到 RPC: {uriStr}");
+                    logger.LogInformation("成功连接到 RPC: {uriStr}", uriStr);
                 }
                 catch (UriFormatException)
                 {
-                    logger.LogInformation($"RPC 地址格式错误: {uriStr}");
+                    logger.LogInformation("RPC 地址格式错误: {uriStr}",uriStr);
                     Environment.Exit(1);
                 }
                 catch (System.Net.WebSockets.WebSocketException ex)
                 {
-                    logger.LogInformation($"无法连接到 RPC: {uriStr}");
-                    logger.LogInformation($"错误信息: {ex.Message}");
+                    logger.LogInformation("无法连接到 RPC: {RpcUri}", uriStr);
+                    logger.LogInformation("错误信息: {ErrorMessage}", ex.Message);
                     Environment.Exit(1);
                 }
                 catch (Exception ex)
                 {
-                    logger.LogInformation($"连接 RPC 时出现未知错误: {ex.Message}");
+                    logger.LogInformation("连接 RPC 时出现未知错误:{ErrorMessage}", ex.Message);
                     Environment.Exit(1);
                 }
 

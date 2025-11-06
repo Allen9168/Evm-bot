@@ -1,0 +1,45 @@
+﻿# 是否启用（上线前先改成 true）
+Enabled: false
+
+# 项目名称（随意）
+Name: "定时发送"
+
+# 模式
+Model: "Burning"
+
+# 目标合约（你要调用的合约）
+Contract: "0x83264d98eb0ec976dadc325a0662bcccf1b39b30"
+
+# 使用哪些账号组
+AccountGroups:
+  - "Main"
+
+# 核心配置
+Burning:
+  Action: "Invoke"
+
+  Invoke:
+    # === 1559 开关 ===
+    Use1559: true
+    # GasLimit（整型，单位：gas）
+    GasLimit: 120000
+    # 最大优先费用（小数，单位：gwei）
+    MaxPriorityFeePerGas: 1.5
+    # 最大费用（小数，单位：gwei）
+    MaxFeePerGas: 30
+    # 你要调用的 calldata（0x 开头）
+    Data: "0x00000"
+
+  # 任选其一：按区块或按时间启动（都不填则立即开始）
+  #StartBlock: 21000000          # 当链高 >= StartBlock 时开始
+  StartTime: 1762402923          # Unix 时间戳（UTC），到达时开始
+
+  # 持续时间（秒）
+  Duration: 60
+
+  # 发包节奏控制
+  Delay:
+    # 每次调用后的时间间隔（毫秒），例如 3000 = 每 3 秒一轮
+    TimeDelay: 60000
+    # 每次调用后延迟多少区块再继续（可选，通常留 0）
+    BlockDelay: 0

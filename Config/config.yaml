@@ -1,4 +1,4 @@
-﻿addres : "wss://ethereum-sepolia.core.chainstack.com/ced486101f05ba9f9bb0bd11112c826f" #这里输入wss节点地址
+﻿addres : "wss://ethereum-sepolia.core.chainstack.com/asd" #这里输入wss节点地址
 # 机器人
 Liquidity :
   Enabled : true
