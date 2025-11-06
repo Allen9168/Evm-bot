@@ -7,7 +7,7 @@ on:
   release:
     types: [ published ]
 
-# 必须：允许 GITHUB_TOKEN 写 release，否则会报 "Resource not accessible by integration"
+# 允许发布 release
 permissions:
   contents: write
 
@@ -19,10 +19,8 @@ jobs:
         include:
           - os: ubuntu-latest
             rid: linux-x64
-            artifact_ext: tar.gz
           - os: windows-latest
             rid: win-x64
-            artifact_ext: zip
 
     env:
       PROJECT: Soha.csproj
@@ -45,7 +43,6 @@ jobs:
       - name: Build
         run: dotnet build ${{ env.PROJECT }} -c ${{ env.CONFIG }} --nologo
 
-      # 发布为自包含单文件
       - name: Publish (self-contained single-file)
         run: >
           dotnet publish ${{ env.PROJECT }} -c ${{ env.CONFIG }}
@@ -54,7 +51,7 @@ jobs:
           -p:AssemblyName=${{ env.APP_NAME }}
           -o ${{ env.OUT_DIR }}/${{ matrix.rid }}/app
 
-      # 复制配置文件到产物
+      # 复制配置
       - name: Copy Config (Linux)
         if: matrix.rid == 'linux-x64'
         run: |
@@ -73,7 +70,7 @@ jobs:
             Copy-Item -Recurse -Force "Config\*" "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\Config\" -ErrorAction SilentlyContinue
           }
 
-      # 打包前移除 PDB（可选）
+      # 去掉 PDB（可选）
       - name: Strip PDB (Linux)
         if: matrix.rid == 'linux-x64'
         run: |
@@ -85,49 +82,57 @@ jobs:
         run: |
           Get-ChildItem -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app" -Recurse -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
 
-      # 打包
-      - name: Pack Linux
+      # 注意：不在构建阶段打包。直接上传展开目录，Artifact 下载即开箱即用
+      - name: Upload artifact (Linux dir)
         if: matrix.rid == 'linux-x64'
-        run: |
-          tar -czf "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}" \
-            -C "${{ env.OUT_DIR }}/${{ matrix.rid }}/app" .
-
-      - name: Pack Windows
-        if: matrix.rid == 'win-x64'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path "${{ env.OUT_DIR }}\${{ matrix.rid }}\app\*" `
-            -DestinationPath "${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}"
-
-      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}-${{ matrix.rid }}
-          path: ${{ env.APP_NAME }}-${{ matrix.rid }}.${{ matrix.artifact_ext }}
+          name: ${{ env.APP_NAME }}-linux-x64
+          path: ${{ env.OUT_DIR }}/linux-x64/app
           if-no-files-found: error
-          compression-level: 0
+
+      - name: Upload artifact (Windows dir)
+        if: matrix.rid == 'win-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-win-x64
+          path: ${{ env.OUT_DIR }}/win-x64/app
+          if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download all artifacts (flatten)
+      - name: Download artifacts (flatten names)
         uses: actions/download-artifact@v4
         with:
           pattern: Soha-*
-          merge-multiple: true
+          merge-multiple: false
 
       - name: Show files
-        run: ls -lah
+        run: ls -lahR
+
+      - name: Install zip (for Windows packaging on Linux)
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      # 现在在 release 阶段再打最终包（只打一次）
+      - name: Pack Linux -> Soha-linux-x64.tar.gz
+        run: |
+          tar -czf Soha-linux-x64.tar.gz -C "Soha-linux-x64" .
+
+      - name: Pack Windows -> Soha-win-x64.zip
+        run: |
+          cd "Soha-win-x64"
+          zip -r ../Soha-win-x64.zip .
+          cd ..
 
       - name: Create/Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            Soha-*.tar.gz
-            Soha-*.zip
+            Soha-linux-x64.tar.gz
+            Soha-win-x64.zip
           generate_release_notes: true
-          # overwrite: true  # 如需覆盖同名资产可打开
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
